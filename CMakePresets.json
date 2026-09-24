@@ -1,0 +1,62 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "msys2-debug",
+      "displayName": "MSYS2 / Ninja Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/msys2-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "msys2-release",
+      "displayName": "MSYS2 / Ninja Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/msys2-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "offline-stub",
+      "displayName": "Offline development stub",
+      "inherits": "msys2-debug",
+      "binaryDir": "${sourceDir}/build/stub",
+      "cacheVariables": {
+        "INK_SDL3_USE_STUB": "ON"
+      }
+    },
+    {
+      "name": "test-debug",
+      "displayName": "Test runner / Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/test-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "INK_BUILD_TESTS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "msys2-debug",
+      "configurePreset": "msys2-debug"
+    },
+    {
+      "name": "msys2-release",
+      "configurePreset": "msys2-release"
+    },
+    {
+      "name": "offline-stub",
+      "configurePreset": "offline-stub"
+    },
+    {
+      "name": "test-debug",
+      "configurePreset": "test-debug"
+    }
+  ]
+}
+

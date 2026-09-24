@@ -1,0 +1,10 @@
+build/
+cmake-build-*/
+.vs/
+.vscode/
+*.user
+*.swp
+*.log
+
+# 下载/解压得到的 SDL3（依赖产物，不属于本仓库源码）
+third_party/sdl3/
