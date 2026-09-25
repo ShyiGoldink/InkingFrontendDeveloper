@@ -17,8 +17,9 @@ include(GNUInstallDirs)
 # ---------------------------------------------------------------------------
 # 编译期开关（关键词：ISDEBUG / ISLOG）
 #
-#   ISDEBUG -> INK_ISDEBUG  调试级日志与调试断言
-#   ISLOG   -> INK_ISLOG    日志系统，写可执行文件同级的 Log.html
+#   ISDEBUG   -> INK_ISDEBUG    调试级日志与调试断言
+#   ISLOG     -> INK_ISLOG      日志系统，写可执行文件同级的 Log.html
+#   ISMESSAGE -> INK_ISMESSAGE  UI 消息队列（关掉后连任务队列线程都不会拉起）
 #
 # 两者都是**编译期**开关：关掉时 INK_LOG_* 宏展开为 ((void)0)，
 # 参数不求值、字符串不拼接、日志代码不进二进制。
@@ -33,6 +34,7 @@ endif()
 
 option(ISDEBUG "调试输出与调试断言（定义 INK_ISDEBUG）" ${_ink_isdebug_default})
 option(ISLOG "日志系统，写可执行文件同级的 Log.html（定义 INK_ISLOG）" ON)
+option(ISMESSAGE "UI 消息队列（定义 INK_ISMESSAGE）" ON)
 
 option(INK_BUILD_EXAMPLES "构建示例程序" ${PROJECT_IS_TOP_LEVEL})
 option(INK_BUILD_TESTS "构建测试程序" ${PROJECT_IS_TOP_LEVEL})
@@ -47,7 +49,13 @@ set(INK_CORE_SOURCES
     src/ink.cpp
     src/ink/thread/ThreadPool.cpp
     src/ink/thread/TaskQueue.cpp
-    src/ink/ui/MessageQueue.cpp
+    src/ink/ui/UiEvent.cpp
+    src/ink/ui/SceneRegistry.cpp
+    src/ink/ui/HitTable.cpp
+    src/ink/ui/Scene.cpp
+    src/ink/ui/Button.cpp
+    src/ink/ui/InputRouter.cpp
+    src/window/SdlCanvas.cpp
     src/window/InkingWindow.cpp)
 
 # 日志实现只在 ISLOG 打开时才参与编译；
@@ -56,12 +64,21 @@ if(ISLOG)
     list(APPEND INK_CORE_SOURCES src/ink/basic/InkLog.cpp)
 endif()
 
+# 消息队列的实现同样只在 ISMESSAGE 打开时才参与编译；
+# 关闭时 MessageQueue 在头文件里退化成空实现，不占存储也不拉起线程。
+if(ISMESSAGE)
+    list(APPEND INK_CORE_SOURCES src/ink/ui/MessageQueue.cpp)
+endif()
+
 add_library(ink_core STATIC ${INK_CORE_SOURCES})
 add_library(ink::core ALIAS ink_core)
 
 target_include_directories(ink_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+# 私有头文件（如 src/window/SdlCanvas.h）只在库内部可见，
+# 用的是同一个 <目录/文件.h> 写法，所以 src 也进私有搜索路径。
+target_include_directories(ink_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(ink_core PUBLIC ${INK_SDL3_TARGET})
 target_compile_features(ink_core PUBLIC cxx_std_20)
 set_target_properties(ink_core PROPERTIES
@@ -79,12 +96,16 @@ endif()
 if(ISLOG)
     target_compile_definitions(ink_core PUBLIC INK_ISLOG=1)
 endif()
+if(ISMESSAGE)
+    target_compile_definitions(ink_core PUBLIC INK_ISMESSAGE=1)
+endif()
 
 # ---------------------------------------------------------------------------
 # 示例 / 测试
 # ---------------------------------------------------------------------------
 if(INK_BUILD_EXAMPLES)
     add_subdirectory(examples/basic)
+    add_subdirectory(examples/scene_demo)
 endif()
 
 if(INK_BUILD_TESTS)
@@ -94,4 +115,3 @@ if(INK_BUILD_TESTS)
     target_compile_features(ink_test PRIVATE cxx_std_20)
     add_test(NAME ink_test COMMAND ink_test)
 endif()
-
