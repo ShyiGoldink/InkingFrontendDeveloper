@@ -2,7 +2,10 @@
 // 退出码非 0 表示有检查项失败。
 
 #include <ink/ink.h>
+#include <input/MouseInput.h>
 #include <window/InkingWindow.h>
+
+#include <SDL3/SDL.h>
 
 #include <any>
 #include <chrono>
@@ -101,6 +104,59 @@ int main() {
     check(!window.setHeight(-1), "非法高度被拒绝");
     check(window.setWidth(1280) && window.GetWidth() == 1280, "setWidth 生效");
     check(window.setHeight(720) && window.GetHeight() == 720, "setHeight 生效");
+
+    // ---------------------------------------------------------------------
+    // 6. 鼠标输入：状态更新、帧末收尾、设计坐标
+    // ---------------------------------------------------------------------
+    {
+        ink::MouseInput mouse;
+        SDL_Event event{};
+
+        event.type = SDL_EVENT_MOUSE_MOTION;
+        event.motion.x = 120.0f;
+        event.motion.y = 80.0f;
+        mouse.UpdateFromSDL(event);
+        check(mouse.GetState().position.x == 120 && mouse.GetState().position.y == 80,
+              "移动事件更新窗口坐标");
+        check(mouse.IsMoved(), "移动事件置位 moved");
+
+        // 窗口坐标 → 设计坐标的换算在窗口层做，MouseInput 只负责存下来。
+        mouse.SetDesignPosition(960.0f, 540.0f);
+        check(mouse.GetState().design.x == 960.0f
+                  && mouse.GetState().design.y == 540.0f,
+              "设计坐标可写入");
+
+        mouse.ResetFrameFlags();
+        check(!mouse.IsMoved(), "帧末清掉 moved");
+        check(mouse.GetState().position.x == 120, "帧末不影响位置");
+
+        event = {};
+        event.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+        event.button.button = SDL_BUTTON_LEFT;
+        event.button.down = true;
+        mouse.UpdateFromSDL(event);
+        check(mouse.IsLeftDown(), "左键按下置位");
+
+        event = {};
+        event.type = SDL_EVENT_MOUSE_BUTTON_UP;
+        event.button.button = SDL_BUTTON_LEFT;
+        mouse.UpdateFromSDL(event);
+        check(!mouse.IsLeftDown(), "左键抬起复位");
+    }
+
+    // ---------------------------------------------------------------------
+    // 7. 窗口主循环：只在显式开了无头冒烟时才跑
+    //
+    // 这一段会真的开窗，并且要等 INK_AUTOQUIT 到点才退出，
+    // 所以默认跳过，只有 `INK_AUTOQUIT=1 ink_test` 才会走。
+    // ---------------------------------------------------------------------
+    if (SDL_getenv("INK_AUTOQUIT") != nullptr) {
+        std::printf("无头冒烟：进入窗口主循环，约 2 秒后自动退出\n");
+        window.Show();
+        // Show() 返回说明主循环退出了；此时窗口句柄应该已经释放，
+        // 再配置一次不会碰到已经销毁的 SDL 对象。
+        check(window.setWidth(1280), "主循环退出后窗口仍可配置（句柄已释放）");
+    }
 
     std::printf("失败项：%d\n", gFailed);
     return gFailed == 0 ? 0 : 1;

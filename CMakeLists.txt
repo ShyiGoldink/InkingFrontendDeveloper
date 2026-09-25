@@ -37,7 +37,7 @@ option(ISLOG "日志系统，写可执行文件同级的 Log.html（定义 INK_I
 option(INK_BUILD_EXAMPLES "构建示例程序" ${PROJECT_IS_TOP_LEVEL})
 option(INK_BUILD_TESTS "构建测试程序" ${PROJECT_IS_TOP_LEVEL})
 
-# SDL3：优先使用系统安装版本，找不到则拉取官方源码，另有离线桩兜底。
+# SDL3：显式本地目录优先，其次系统安装版本，都没有则拉取官方源码。
 include(cmake/SDL3.cmake)
 
 # ---------------------------------------------------------------------------
@@ -48,6 +48,7 @@ set(INK_CORE_SOURCES
     src/ink/thread/ThreadPool.cpp
     src/ink/thread/TaskQueue.cpp
     src/ink/ui/MessageQueue.cpp
+    src/input/MouseInput.cpp
     src/window/InkingWindow.cpp)
 
 # 日志实现只在 ISLOG 打开时才参与编译；
@@ -78,6 +79,25 @@ if(ISDEBUG)
 endif()
 if(ISLOG)
     target_compile_definitions(ink_core PUBLIC INK_ISLOG=1)
+endif()
+
+# ---------------------------------------------------------------------------
+# 控制台窗口：ISDEBUG 关闭时把可执行文件链成 GUI 子系统，双击不再弹黑框。
+# ISDEBUG 打开时保留控制台，方便看调试输出。
+#
+# 挂在 ink_core 的 INTERFACE 上：谁链接 ink_core，谁就继承这条链接选项，
+# 直接 add_subdirectory 引入本库的应用不用自己再写一遍。
+#
+# 注意 —— MinGW 下 `-mwindows` 会换成 GUI 子系统入口，但 mingw-w64 的
+# 运行时仍然会把 main() 叫起来，所以源码里照旧写 int main() 即可。
+# MSVC 是另一套开关，且必须显式指定入口点，否则链接器会去找 WinMain。
+# ---------------------------------------------------------------------------
+if(NOT ISDEBUG)
+    if(MSVC)
+        target_link_options(ink_core INTERFACE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
+    elseif(WIN32)
+        target_link_options(ink_core INTERFACE -mwindows)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

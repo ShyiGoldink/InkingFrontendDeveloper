@@ -1,7 +1,8 @@
 #pragma once
 
-#include <string>
 #include <config/window_config.h>
+#include <input/MouseInput.h>
+#include <string>
 
 namespace ink {
 
@@ -25,6 +26,8 @@ private:
 
     int _width = inking::kDesignWidth;
     int _height = inking::kDesignHeight;
+
+    MouseInput _mouseInput;
 };
 
 }  // namespace ink

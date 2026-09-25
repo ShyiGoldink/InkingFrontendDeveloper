@@ -1,11 +1,11 @@
 # SDL3 安装与配置指南
 
 本文档说明如何为 InkingFrontendDeveloper 准备 SDL3 环境，覆盖
-Windows（MSYS2）、Linux、macOS，以及“没有 SDL3 时”的三种做法。
+Windows（MSYS2）、Linux、macOS，以及“没有 SDL3 时”的做法。
 
 > 提示：项目 CMake 的查找顺序是
-> `显式的桩 / 显式的本地目录 → 系统 SDL3 → FetchContent 源码`。
-> 两个显式选项优先级最高：只要你指定了，就不会再去自动检测。
+> `显式的本地目录 → 系统 SDL3 → FetchContent 源码`。
+> 显式选项优先级最高：只要你指定了目录，就不会再去自动检测。
 
 ## 0. 先确认有没有 SDL3
 
@@ -26,7 +26,6 @@ cmake --find-package -DNAME=SDL3 -DCOMPILER_ID=GNU -DLANGUAGE=C -DMODE=EXIST
 Inking: using local SDL3 (3.x.y) at ...   # 用了 INK_SDL3_LOCAL_DIR
 Inking: using system SDL3 (3.x.y)         # 用了系统包
 Inking: SDL3 not found, fetching ...      # 将尝试 FetchContent
-Inking: using offline SDL3 dev stub       # 用了离线桩
 ```
 
 ## 1. Windows（推荐 MSYS2）
@@ -89,17 +88,6 @@ cmake -B build/msys2-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug `
 
 这是显式选项，**优先于系统 SDL3**：指定了就一定用它。脚本会自动挑
 与本机位数匹配的三元组目录（64 位优先 `x86_64-*`）。
-
-### 方案 E：离线开发桩（仅验证编译链路）
-
-```sh
-cmake --preset offline-stub
-cmake --build --preset offline-stub
-```
-
-> 离线桩 `third_party/sdl3_stub` 只实现了当前示例用到的 API，
-> 用来在没有 SDL3 的机器上验证“工程 + 编译 + 链接”是否打通，
-> **不能**证明运行期行为正确。
 
 ## 2. Linux
 
@@ -169,7 +157,7 @@ FetchContent_MakeAvailable(ink)
 ## 5. 常见问题
 
 **Q：FetchContent 一直失败，说连不上 GitHub？**
-网络受限。改用系统包 / 本地目录 / 离线桩（见第 1 节）。
+网络受限。改用系统包 / 本地目录（见第 1 节）。
 
 **Q：装了包但 CMake 还是拉源码？**
 确认 `SDL3Config.cmake` 所在的目录在 `CMAKE_PREFIX_PATH` 里，
@@ -185,18 +173,14 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 两套 C 运行时。生产建议用与工具链匹配的包（UCRT64 → 带 `ucrt` 的包）。
 
 **Q：系统装了 SDL3，同时指定了本地目录，用哪个？**
-显式选项优先。设了 `INK_SDL3_LOCAL_DIR` 或 `INK_SDL3_USE_STUB` 就
-不会再走系统包自动检测。
+显式选项优先。设了 `INK_SDL3_LOCAL_DIR` 就不会再走系统包自动检测。
 
 **Q：运行时报找不到 SDL3.dll？**
 Windows 上把 `SDL3.dll` 所在目录加入 PATH，或拷贝到可执行文件旁边。
 
-**Q：只验证编译，不想联网也不想装 SDL3？**
-用离线桩：
-
-```sh
-cmake --preset offline-stub && cmake --build --preset offline-stub
-```
+**Q：不想联网，也不想装系统包？**
+用本地目录（方案 D）。仓库里预放了一份 SDL3 在 `third_party/sdl3`，
+没有的话照第 6 节手动下载一份即可。
 
 ## 6. 手动下载 SDL3（离线机器）
 

@@ -21,15 +21,6 @@
       }
     },
     {
-      "name": "offline-stub",
-      "displayName": "Offline development stub",
-      "inherits": "msys2-debug",
-      "binaryDir": "${sourceDir}/build/stub",
-      "cacheVariables": {
-        "INK_SDL3_USE_STUB": "ON"
-      }
-    },
-    {
       "name": "test-debug",
       "displayName": "Test runner / Debug",
       "generator": "Ninja",
@@ -50,13 +41,8 @@
       "configurePreset": "msys2-release"
     },
     {
-      "name": "offline-stub",
-      "configurePreset": "offline-stub"
-    },
-    {
       "name": "test-debug",
       "configurePreset": "test-debug"
     }
   ]
 }
-

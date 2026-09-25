@@ -1,34 +1,20 @@
 # SDL3 acquisition policy for InkingFrontendDeveloper.
 #
 # Resolution order (first match wins):
-#   1. INK_SDL3_USE_STUB=ON  -> offline dev stub (no window, compiles anywhere)
-#   2. INK_SDL3_LOCAL_DIR    -> explicit local SDL3 install (no network needed)
-#   3. system-installed SDL3 -> find_package(SDL3 CONFIG)
-#   4. FetchContent from src -> official repo at INK_SDL3_GIT_TAG
+#   1. INK_SDL3_LOCAL_DIR    -> explicit local SDL3 install (no network needed)
+#   2. system-installed SDL3 -> find_package(SDL3 CONFIG)
+#   3. FetchContent from src -> official repo at INK_SDL3_GIT_TAG
 #
-# The two explicit options (1 and 2) win over auto-detection: if the user
-# names a stub or a directory, that is what gets used.
+# The explicit option wins over auto-detection: if the user names a
+# directory, that is what gets used.
 #
 # Exposes INK_SDL3_TARGET and SDL3::SDL3 regardless of the chosen source.
-
-option(INK_SDL3_USE_STUB
-    "Use the offline development stub instead of real SDL3" OFF)
 
 set(INK_SDL3_GIT_TAG "release-3.4.2" CACHE STRING
     "SDL3 git tag/branch used by FetchContent")
 
 set(INK_SDL3_LOCAL_DIR "" CACHE PATH
     "Path to a local SDL3 install (must contain SDL3Config.cmake)")
-
-if(INK_SDL3_USE_STUB)
-    message(STATUS "Inking: using offline SDL3 dev stub (third_party/sdl3_stub)")
-    add_library(ink_sdl3_stub INTERFACE)
-    target_include_directories(ink_sdl3_stub INTERFACE
-        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sdl3_stub/include)
-    add_library(SDL3::SDL3 ALIAS ink_sdl3_stub)
-    set(INK_SDL3_TARGET ink_sdl3_stub)
-    return()
-endif()
 
 # 1) Explicit local SDL3 install (no network needed).
 if(INK_SDL3_LOCAL_DIR)

@@ -8,7 +8,7 @@
 - 渲染层：DrawCall 合批 + 静态烘焙，不做 CPU 逐像素渲染
 - 布局：百分比 + 对齐点（含 `Layout::Middle`，即 50%）
 - 事件分发：自上而下直线命中，由代码生成器展开
-- SDL3 引入：优先系统包 → FetchContent 源码 → 离线桩
+- SDL3 引入：显式本地目录 → 系统包 → FetchContent 源码
 
 当前处于**工程骨架**阶段：已有顶层 CMake、SDL3 引入策略和最小开窗
 示例；SDF 形状层、渲染层、代码生成器尚未实现。
@@ -20,9 +20,9 @@
 cmake --preset msys2-debug
 cmake --build --preset msys2-debug
 
-# 方式 2：没有 SDL3 也没有网络，仅验证编译链路（离线桩）
-cmake --preset offline-stub
-cmake --build --preset offline-stub
+# 方式 2：没装 SDL3 也不联网，用仓库里预放的本地目录
+cmake -B build/msys2-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug -DINK_SDL3_LOCAL_DIR=third_party/sdl3
+cmake --build build/msys2-debug
 ```
 
 完整说明见：
@@ -34,7 +34,7 @@ cmake --build --preset offline-stub
 ## 当前状态
 
 - [x] 顶层 CMake（可独立构建，也可被 add_subdirectory 嵌入）
-- [x] SDL3 引入：系统包 / FetchContent 源码 / 离线桩
+- [x] SDL3 引入：本地目录 / 系统包 / FetchContent 源码
 - [x] 最小开窗示例（1280×720 设计空间，letterbox）
 - [ ] SDF 形状层
 - [ ] 样式/渲染层

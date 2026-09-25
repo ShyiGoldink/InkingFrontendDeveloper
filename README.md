@@ -8,7 +8,7 @@
 - 渲染层：DrawCall 合批 + 静态烘焙，不做 CPU 逐像素渲染
 - 布局：百分比 + 对齐点（含 `Layout::Middle`，即 50%）
 - 事件分发：自上而下直线命中，由代码生成器展开
-- SDL3 引入：显式本地目录/桩 → 系统包 → FetchContent 源码
+- SDL3 引入：显式本地目录 → 系统包 → FetchContent 源码
 
 当前处于**工程骨架**阶段：已有顶层 CMake、SDL3 引入策略和最小开窗
 示例；SDF 形状层、渲染层、代码生成器尚未实现。
@@ -70,27 +70,24 @@ cmake -B build/msys2-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 
 这是显式选项，优先于系统 SDL3，也不联网拉源码。
 
-### 方式 4：离线开发桩（仅验证编译链路）
+### 无头冒烟（可选）
 
-没有 SDL3 也没有网络时，可用项目自带的**开发桩**验证工程能否编译、
-链接、运行。它只实现了示例用到的少量 API，**不能**证明运行期行为正确。
+设了 `INK_AUTOQUIT` 就跑约 2 秒然后自己退出，用来在没有人盯着屏幕时
+确认窗口真的开得起来、主循环真的转得动：
 
 ```sh
-cmake --preset offline-stub
-cmake --build --preset offline-stub
+INK_AUTOQUIT=1 build/msys2-debug/bin/basic_window.exe   # 开窗 + 占位绘制
+INK_AUTOQUIT=1 build/msys2-debug/bin/ink_test.exe       # 自检 + 跑一次窗口主循环
 ```
-
-产物在 `build/stub/examples/basic/basic_window.exe`，可用
-`INK_AUTOQUIT=1` 无头冒烟运行（约 2 秒后自动退出）。
 
 ## 目录结构
 
 ```natrue
 .
 ├─ CMakeLists.txt           顶层构建：库 + 示例；支持被 add_subdirectory
-├─ CMakePresets.json        CMake 预设（msys2-debug / msys2-release / offline-stub）
+├─ CMakePresets.json        CMake 预设（msys2-debug / msys2-release / test-debug）
 ├─ cmake/
-│  └─ SDL3.cmake             SDL3 引入策略（系统 / FetchContent / 桩）
+│  └─ SDL3.cmake             SDL3 引入策略（本地目录 / 系统 / FetchContent）
 ├─ docs/
 │  ├─ README.md              本文件
 │  ├─ SETUP.md               SDL3 安装与配置指南（跨平台）
@@ -98,7 +95,6 @@ cmake --build --preset offline-stub
 ├─ include/ink/              公共头文件（对外 API）
 ├─ src/                      核心库源码
 ├─ examples/basic/           最小开窗示例（1280×720 letterbox）
-├─ third_party/sdl3_stub/    离线开发桩
 └─ third_party/sdl3/         本地 SDL3 安装（可选，手动放入）
 ```
 
@@ -111,8 +107,9 @@ cmake --build --preset offline-stub
 # 配置 + 构建（真实 SDL3）
 cmake --preset msys2-debug && cmake --build --preset msys2-debug
 
-# 配置 + 构建（离线桩）
-cmake --preset offline-stub && cmake --build --preset offline-stub
+# 配置 + 构建（用仓库里预放的本地 SDL3，不联网）
+cmake -B build/msys2-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DINK_SDL3_LOCAL_DIR=third_party/sdl3 && cmake --build build/msys2-debug
 
 # Release
 cmake --preset msys2-release && cmake --build --preset msys2-release
@@ -146,15 +143,11 @@ cmake -B /tmp/ink-check -G Ninja -DCMAKE_BUILD_TYPE=Debug
 ## FAQ
 
 **这个库能不能不用 SDL3？**
-不能，SDL3 是唯一底层依赖。离线桩只用于无 SDL3 环境验证编译链路。
-
-**为什么离线的桩不是真 SDL3？**
-桩头文件只覆盖当前示例用到的 API（初始化、窗口、渲染器、事件等）。
-扩展代码前先补桩，或直接安装真实 SDL3。
+不能，SDL3 是唯一底层依赖。要离线构建，就用本地 SDL3 目录那条路。
 
 **谁使用这个库？**
 源码分发。使用方通过 `add_subdirectory` 或 `FetchContent` 引入本库，
-SDL3 自动按“显式本地目录/桩 → 系统包 → 源码”策略解决。
+SDL3 自动按“显式本地目录 → 系统包 → 源码”策略解决。
 
 **哪些系统支持？**
 SDL3 支持的平台就是本项目支持的平台（Windows/Linux/macOS/等）。
@@ -162,15 +155,21 @@ SDL3 支持的平台就是本项目支持的平台（Windows/Linux/macOS/等）�
 **当前能跑哪些示例？**
 `examples/basic`：开一个 1280×720 letterbox 窗口并绘制占位色块。
 
+**Release 构建双击运行，为什么什么都看不到？**
+`ISDEBUG` 关闭时可执行文件是 GUI 子系统，本来就没有控制台窗口。
+想临时看输出就从终端启动（`build/msys2-release/bin/basic_window.exe`），
+或者改用 Debug 构建。
+
 ## 当前状态
 
 - [x] 顶层 CMake（可独立构建，也可被 add_subdirectory 嵌入）
-- [x] SDL3 引入：系统包 / 本地目录 / FetchContent 源码 / 离线桩
+- [x] SDL3 引入：本地目录 / 系统包 / FetchContent 源码
 - [x] 最小开窗示例（1280×720 设计空间，letterbox）
 - [x] 日志系统（HTML，按天与程序启动会话分组）、消息队列、任务队列与线程池
 - [x] 编译期开关 ISDEBUG / ISLOG / ISMESSAGE：关闭后对应代码不进二进制
+      （ISDEBUG 关闭时连控制台窗口一起去掉）
 - [x] InkingWindow 单例（窗口尺寸运行期可调，设计尺寸是编译期常量）
-- [ ] 事件泵与绘制入口
+- [x] 事件泵 + 鼠标输入接入（`Show()` 内主循环；绘制仍是占位）
 - [ ] SDF 形状层
 - [ ] 样式/渲染层
 - [ ] 描述文件 + 代码生成器

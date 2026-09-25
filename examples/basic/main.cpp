@@ -1,6 +1,7 @@
 #include <ink/ink.h>
 #include <SDL3/SDL.h>
 
+#include <chrono>
 #include <cstdlib>
 
 namespace {
@@ -44,8 +45,9 @@ int main() {
         renderer, kDesignWidth, kDesignHeight,
         SDL_LOGICAL_PRESENTATION_LETTERBOX);
 
+    // 计时用 steady_clock，和 SDL 的计时器解耦——这个循环本来只是占位。
     const bool autoQuit = SDL_getenv("INK_AUTOQUIT") != nullptr;
-    const Uint64 start = SDL_GetTicks();
+    const auto start = std::chrono::steady_clock::now();
     bool running = true;
 
     while (running) {
@@ -59,7 +61,9 @@ int main() {
             }
         }
 
-        if (autoQuit && SDL_GetTicks() - start > 2000) {
+        if (autoQuit
+            && std::chrono::steady_clock::now() - start
+                   > std::chrono::milliseconds(2000)) {
             running = false;  // smoke-test mode: close after ~2 s
         }
 
@@ -79,4 +83,3 @@ int main() {
     SDL_Quit();
     return 0;
 }
-
