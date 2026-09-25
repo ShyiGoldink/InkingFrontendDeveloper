@@ -22,7 +22,7 @@ cmake --find-package -DNAME=SDL3 -DCOMPILER_ID=GNU -DLANGUAGE=C -DMODE=EXIST
 
 也可以直接跑一次 `cmake --preset msys2-debug`，看配置日志开头：
 
-```
+```text
 Inking: using local SDL3 (3.x.y) at ...   # 用了 INK_SDL3_LOCAL_DIR
 Inking: using system SDL3 (3.x.y)         # 用了系统包
 Inking: SDL3 not found, fetching ...      # 将尝试 FetchContent
@@ -174,6 +174,7 @@ FetchContent_MakeAvailable(ink)
 **Q：装了包但 CMake 还是拉源码？**
 确认 `SDL3Config.cmake` 所在的目录在 `CMAKE_PREFIX_PATH` 里，
 或 `find_package(SDL3 CONFIG)` 能找到：
+
 ```sh
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DCMAKE_PREFIX_PATH=/path/to/your/sdl3
@@ -192,6 +193,7 @@ Windows 上把 `SDL3.dll` 所在目录加入 PATH，或拷贝到可执行文件�
 
 **Q：只验证编译，不想联网也不想装 SDL3？**
 用离线桩：
+
 ```sh
 cmake --preset offline-stub && cmake --build --preset offline-stub
 ```
@@ -203,11 +205,11 @@ cmake --preset offline-stub && cmake --build --preset offline-stub
 
 ### 推荐：官方预编译开发包（Windows）
 
-1. 打开 https://github.com/libsdl-org/SDL/releases
+1. 打开 [SDL Releases](https://github.com/libsdl-org/SDL/releases)
 2. 下载 `SDL3-devel-3.4.2-...-mingw.zip`（MSVC 版是 `-VC.zip`）
 3. 解压后目录结构类似：
 
-```
+```text
 SDL3-devel-3.4.2-mingw/
 ├─ include/SDL3/...
 ├─ lib/cmake/SDL3/SDL3Config.cmake
@@ -215,7 +217,7 @@ SDL3-devel-3.4.2-mingw/
 └─ bin/SDL3.dll
 ```
 
-4. 配置时指向该目录（见方案 D）。
+1. 配置时指向该目录（见方案 D）。
 
 ### 备选：从源码自己编译
 

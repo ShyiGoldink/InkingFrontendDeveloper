@@ -45,7 +45,7 @@
   （显式桩 / 显式本地目录 / 系统包 / FetchContent）、
   最小开窗示例（1280×720 letterbox）、离线开发桩；
 - 已有：从后端框架移植的日志（HTML）、消息队列、任务队列、线程池，
-  以及 ISDEBUG / ISLOG 两个编译期开关；
+  以及 ISDEBUG / ISLOG / ISMESSAGE 三个编译期开关；
 - 已有：InkingWindow 单例（窗口尺寸是运行期属性，设计尺寸是编译期常量）；
 - 未实现：SDF 形状层、样式/渲染层、描述文件 + 代码生成器；
   另外 InkingWindow 目前只负责开窗，没有事件泵/绘制入口（见已知坑 6）。
@@ -71,3 +71,7 @@
    是“真实现”还是“空实现”。库和调用方看到不同宏就是 ODR 违规，
    编译器不报错但行为错乱。所以它们挂在 `ink_core` 的 PUBLIC 定义上，
    不要改用目录级的 `add_compile_definitions`（那还会污染第三方目标）。
+8. **日志和消息必须用宏调用**：`INK_LOG_*` / `INK_MESSAGE_*` 关闭时展开成
+   `((void)0)`，连参数都不求值；直接调用类方法（`InkLog::info`、
+   `MessageQueue::addMessage`）时参数照样会求值，字符串拼接和 to_string
+   的开销一点都没省。新增子系统时照这个模式给宏，别只给类。

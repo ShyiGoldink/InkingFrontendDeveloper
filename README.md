@@ -85,7 +85,7 @@ cmake --build --preset offline-stub
 
 ## 目录结构
 
-```
+```natrue
 .
 ├─ CMakeLists.txt           顶层构建：库 + 示例；支持被 add_subdirectory
 ├─ CMakePresets.json        CMake 预设（msys2-debug / msys2-release / offline-stub）
@@ -165,8 +165,12 @@ SDL3 支持的平台就是本项目支持的平台（Windows/Linux/macOS/等）�
 ## 当前状态
 
 - [x] 顶层 CMake（可独立构建，也可被 add_subdirectory 嵌入）
-- [x] SDL3 引入：系统包 / FetchContent 源码 / 离线桩
+- [x] SDL3 引入：系统包 / 本地目录 / FetchContent 源码 / 离线桩
 - [x] 最小开窗示例（1280×720 设计空间，letterbox）
+- [x] 日志系统（HTML，按天与程序启动会话分组）、消息队列、任务队列与线程池
+- [x] 编译期开关 ISDEBUG / ISLOG / ISMESSAGE：关闭后对应代码不进二进制
+- [x] InkingWindow 单例（窗口尺寸运行期可调，设计尺寸是编译期常量）
+- [ ] 事件泵与绘制入口
 - [ ] SDF 形状层
 - [ ] 样式/渲染层
 - [ ] 描述文件 + 代码生成器
