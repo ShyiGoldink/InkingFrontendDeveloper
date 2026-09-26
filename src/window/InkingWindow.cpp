@@ -376,6 +376,10 @@ void InkingWindow::Show(const std::string& sceneName) {
         return;
     }
 
+    // 半透明控件要混色才看得见：SDL 的绘制默认不混合，alpha 会被直接丢掉。
+    // 这是渲染器的属性，所以由窗口层开一次；场景层只管给出带 alpha 的颜色。
+    SDL_SetRenderDrawBlendMode(s.renderer, SDL_BLENDMODE_BLEND);
+
     // 设计尺寸只在这里用一次：它定义的是逻辑坐标系，
     // letterbox 保证任何窗口比例下 UI 都不变形，多余空间留黑边。
     SDL_SetRenderLogicalPresentation(

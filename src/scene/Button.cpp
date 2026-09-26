@@ -1,5 +1,7 @@
 #include <scene/Button.h>
 
+#include <cmath>
+
 #include <ink/basic/InkLog.h>
 
 namespace ink {
@@ -99,13 +101,58 @@ std::uint64_t Button::AppearanceChanges() const noexcept {
     return _appearanceChanges;
 }
 
+// ---------------------------------------------------------------------------
+// 悬停放大：走尺寸写入口，所以会连带标脏 → 上层重烘
+// ---------------------------------------------------------------------------
+
+bool Button::SetHoverGrowth(float factor) {
+    if (factor < 1.0f) {
+        factor = 1.0f;
+    }
+    if (_hoverGrowth == factor) {
+        return false;
+    }
+    _hoverGrowth = factor;
+    return true;  // 倍率本身不改变当前画面，所以不标脏
+}
+
+float Button::GetHoverGrowth() const noexcept {
+    return _hoverGrowth;
+}
+
+bool Button::IsGrown() const noexcept {
+    return _grown;
+}
+
+void Button::ApplyHoverGrowth(bool hovered) {
+    if (hovered) {
+        if (_hoverGrowth <= 1.0f || _grown) {
+            return;
+        }
+        _baseWidth = GetWidth();
+        _baseHeight = GetHeight();
+        _grown = true;
+        // Resize 是不可重写的写入口：命中表与重绘的标脏都在它内部完成。
+        Resize(static_cast<int>(std::lround(static_cast<float>(_baseWidth) * _hoverGrowth)),
+               static_cast<int>(std::lround(static_cast<float>(_baseHeight) * _hoverGrowth)));
+        return;
+    }
+
+    if (!_grown) {
+        return;
+    }
+    _grown = false;
+    Resize(_baseWidth, _baseHeight);  // 精确还原，不累积取整误差
+}
+
 bool Button::SetHovered(bool hovered) {
     if (_hovered == hovered) {
         return false;
     }
     _hovered = hovered;
     ++_appearanceChanges;
-    MakeDirty("悬停状态变化");  // 三档外观只改颜色，几何一点不动
+    ApplyHoverGrowth(hovered);  // 几何那一半（设了倍率才有）：会重烘
+    MakeDirty("悬停状态变化");   // 颜色那一半：只重绘
     return true;
 }
 

@@ -137,6 +137,7 @@ endif()
 # ---------------------------------------------------------------------------
 if(INK_BUILD_EXAMPLES)
     add_subdirectory(examples/basic)
+    add_subdirectory(examples/hover_grow)
     add_subdirectory(examples/menu_bar)
 endif()
 

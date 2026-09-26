@@ -110,9 +110,11 @@ struct MenuBarFixture {
 class RecordingCanvas : public ink::Canvas {
 public:
     std::vector<ink::Color> fills;
+    std::vector<ink::Rect> fillRects;
 
-    void fillRect(const ink::Rect&, const ink::Color& color) override {
+    void fillRect(const ink::Rect& rect, const ink::Color& color) override {
         fills.push_back(color);
+        fillRects.push_back(rect);
     }
     void strokeRect(const ink::Rect&, const ink::Color&, float) override {}
     void drawLine(float, float, float, float, const ink::Color&) override {}
@@ -651,7 +653,142 @@ int main() {
     }
 
     // ---------------------------------------------------------------------
-    // 14. 窗口主循环：只在显式开了无头冒烟时才跑
+    // 14. 悬停变大：走尺寸写入口 → 标脏 → 上层重烘（只改颜色的那一路做对照）
+    // ---------------------------------------------------------------------
+    {
+        ink::InkingScene page("自检-白页");
+        page.Resize(800, 600);
+
+        ink::Button& grow = page.Make<ink::Button>("自检-会长大的按钮", "一号");
+        grow.ChangeSelfAnchor(ink::InkingChangeAnchor::Center);
+        grow.ChangeTraceAnchor(ink::InkingChangeAnchor::Center);
+        grow.ChangeOffset(0.0f, 0.0f);  // 父级正中央
+        grow.Resize(200, 100);
+        grow.SetFill(ink::rgba(0, 0, 0, 120));  // 半透明黑
+        grow.SetHoverGrowth(1.2f);
+
+        ink::Button& plain = page.Make<ink::Button>("自检-不长大的按钮", "二号");
+        plain.ChangeSelfAnchor(ink::InkingChangeAnchor::Center);
+        plain.ChangeTraceAnchor(ink::InkingChangeAnchor::Center);
+        plain.ChangeOffset(-280.0f, 0.0f);
+        plain.Resize(120, 60);
+        plain.SetFill(ink::rgba(0, 0, 0, 120));
+
+        page.Bake();
+        const std::uint64_t bakeBase = page.BakeCount();
+
+        // 放大前：200×100 居中在 (400,300) → 覆盖 300..500 × 250..350
+        check(grow.GetRect().x == 300.0f && grow.GetRect().y == 250.0f, "初始位置由锚点推出");
+        check(page.Query(505.0f, 300.0f).target == &page, "放大前：边缘外那一点归场景");
+        check(page.Query(400.0f, 300.0f).target == &grow, "放大前：中心归按钮");
+
+        ink::InputRouter router;
+        router.Attach(page);
+        check(router.BeginFrame(400.0f, 300.0f), "脏 → 这一帧查一次");
+        check(router.GetHovered() == &grow, "hover 落在按钮上（走真实输入路径）");
+        check(grow.IsHovered() && grow.IsGrown(), "悬停 → 进入放大状态");
+        check(grow.GetWidth() == 240 && grow.GetHeight() == 120, "悬停 → 按 1.2 倍放大");
+        check(page.NeedsBake(), "尺寸变了 → 命中表标脏");
+        check(ink::RedrawScheduler::Dirty(), "同一件事也标了重绘");
+
+        // 下一帧的重查会把表烘出来，而且只多烘这一次
+        check(router.BeginFrame(400.0f, 300.0f), "帧计数尾巴里还会查");
+        check(page.BakeCount() == bakeBase + 1, "放大只触发一次重烘");
+        check(!page.NeedsBake(), "烘完又不脏了");
+
+        // 表里的条目真的换成了放大后的矩形
+        const ink::StaticEntry* grownEntry = nullptr;
+        for (const ink::StaticEntry& entry : page.GetHitTable().Entries()) {
+            if (entry.node == &grow) {
+                grownEntry = &entry;
+            }
+        }
+        check(grownEntry != nullptr && grownEntry->rect.x == 280.0f
+                  && grownEntry->rect.y == 240.0f && grownEntry->rect.w == 240.0f
+                  && grownEntry->rect.h == 120.0f,
+              "重烘后的表里就是放大后的矩形（从中心四周各外扩 20）");
+
+        // 新扩出来的那一圈现在也能命中
+        check(page.Query(505.0f, 300.0f).target == &grow, "放大后：新边缘命中按钮");
+        check(page.Query(400.0f, 358.0f).target == &grow, "放大后：下边缘命中按钮");
+        check(page.Query(521.0f, 300.0f).target == &page, "放大后：更外面还是场景");
+        check(plain.GetWidth() == 120 && plain.GetHeight() == 60, "兄弟按钮没被牵连");
+
+        // 画出来的也是放大后的矩形（不只是命中范围变大）
+        {
+            RecordingCanvas recording;
+            page.Draw(recording);
+            bool drawnGrown = false;
+            bool drawnPlain = false;
+            for (std::size_t i = 0; i < recording.fillRects.size(); ++i) {
+                const ink::Rect& rect = recording.fillRects[i];
+                if (rect.x == 280.0f && rect.w == 240.0f && rect.h == 120.0f) {
+                    drawnGrown = true;
+                }
+                if (rect.x == 60.0f && rect.w == 120.0f && rect.h == 60.0f) {
+                    drawnPlain = true;
+                }
+            }
+            check(drawnGrown, "放大后画的就是 240×120 那块的矩形");
+            check(drawnPlain, "对照按钮画的是原来的 120×60");
+        }
+
+        // 移开 → 缩回原尺寸，再重烘一次
+        router.MarkMouseMoved();
+        router.BeginFrame(521.0f, 300.0f);  // 这一点在放大后的按钮外面
+        check(!grow.IsHovered() && !grow.IsGrown(), "离开 → 退出放大状态");
+        check(grow.GetWidth() == 200 && grow.GetHeight() == 100, "离开 → 缩回原尺寸");
+        check(page.NeedsBake(), "缩回去也要重烘");
+        router.BeginFrame(521.0f, 300.0f);
+        check(page.BakeCount() == bakeBase + 2, "缩回去刚好再重烘一次");
+        check(page.Query(505.0f, 300.0f).target == &page, "缩回后那一圈又归场景");
+
+        // 对照：只改颜色的悬停（没设放大倍率）一次都不重烘
+        const std::uint64_t bakePlain = page.BakeCount();
+        ink::RedrawScheduler::Reset();
+        while (ink::RedrawScheduler::BeginFrame()) {
+            ink::RedrawScheduler::EndFrame();
+        }
+        router.MarkMouseMoved();
+        router.BeginFrame(120.0f, 300.0f);
+        check(router.GetHovered() == &plain && plain.IsHovered(), "对照按钮进入悬停");
+        check(page.BakeCount() == bakePlain, "只改颜色的悬停：一次都没重烘");
+        check(ink::RedrawScheduler::Dirty(), "但重绘标脏了（外观变了）");
+
+        // 附带验一条边界：会变宽的按钮组不能留在「等宽等距」专用查找里
+        {
+            ink::InkingScene rowPage("自检-等宽等距退回页");
+            rowPage.Resize(400, 200);
+
+            ink::InkingScene& row = rowPage.Make<ink::InkingScene>("自检-等宽等距行");
+            row.UseSlotLayout();
+            row.Resize(400, 60);
+
+            ink::Button& firstCell = row.Make<ink::Button>("自检-行内按钮1", "一");
+            firstCell.Resize(160, 40);
+            firstCell.ChangeOffset(20.0f, 10.0f);
+            firstCell.SetHoverGrowth(1.5f);
+
+            ink::Button& secondCell = row.Make<ink::Button>("自检-行内按钮2", "二");
+            secondCell.Resize(160, 40);
+            secondCell.ChangeOffset(220.0f, 10.0f);
+
+            rowPage.Bake();
+            check(row.UsesSlotIndex(), "等宽等距的行 → 用专用查找");
+
+            ink::PointerEvent enter;
+            firstCell.onPointerEnter(enter);  // 1.5 倍 → 240 宽，行不再等宽
+            rowPage.Bake();
+            check(!row.UsesSlotIndex(), "槽位不等宽了 → 退回网格表");
+            check(!row.GetHitTable().Empty(), "退回后表还在，照样能查");
+            check(rowPage.Query(120.0f, 30.0f).target == &firstCell, "退回后照样命中");
+            check(rowPage.Query(300.0f, 30.0f).target == &secondCell, "邻槽也照样命中");
+            check(rowPage.Query(5.0f, 30.0f).target == &row, "行内空白归行自己");
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 15. 窗口主循环：只在显式开了无头冒烟时才跑
     //
     // 这一段会真的开窗，并且要等 INK_AUTOQUIT 到点才退出，
     // 所以默认跳过，只有 `INK_AUTOQUIT=1 ink_test` 才会走。

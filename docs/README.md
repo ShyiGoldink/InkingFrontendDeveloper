@@ -47,6 +47,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build --parallel
 - [x] 输入：isDirty + 三态 query（Block / PassThrough / Miss）+ 显式 zindex
 - [x] 重绘：与输入独立的一路，需要重绘的属性由写入口明确调 `makeDirty()`
 - [x] 最小完整测试 `examples/menu_bar`（一个窗口 + 顶部 3 按钮菜单栏，点击只写日志）
+- [x] `examples/hover_grow`：纯白场景 + 半透明黑按钮，悬停加重并变大（重烘那条路）
 - [ ] SDF 形状层
 - [ ] 样式/渲染层
 - [ ] 描述文件 + 代码生成器

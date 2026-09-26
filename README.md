@@ -126,6 +126,7 @@ INK_AUTOQUIT=1 build/msys2-debug/bin/ink_test.exe       # 自检 + 跑一次窗�
 ├─ src/                      核心库源码（core / scene / window / input / ink）
 ├─ examples/basic/           最小开窗示例（1280×720 letterbox）
 ├─ examples/menu_bar/        顶部 3 按钮菜单栏（静态层 + 重绘方案的最小完整测试）
+├─ examples/hover_grow/       纯白场景 + 半透明黑按钮（悬停加重并变大 → 重烘）
 └─ third_party/sdl3/         本地 SDL3 安装（可选，手动放入）
 ```
 
@@ -197,6 +198,10 @@ SDL3 支持的平台就是本项目支持的平台（Windows/Linux/macOS/等）�
 （`makeDirty()` + 帧计数）和 zindex。跑法：
 `INK_AUTOQUIT=1 build/msys2-debug/bin/menu_bar.exe`（退出时会把这一趟的账
 写进 Log.html）。
+`examples/hover_grow`：纯白场景 + 3 颗半透明黑按钮，悬停时黑色加重、
+同时按 1.15 倍放大——放大走尺寸写入口，所以上层命中表会重烘一次，
+用来验「几何变化 → 标脏 → 重烘」这条路。跑法：
+`INK_AUTOQUIT=1 build/msys2-debug/bin/hover_grow.exe`。
 
 **Release 构建双击运行，为什么什么都看不到？**
 `ISDEBUG` 关闭时可执行文件是 GUI 子系统，本来就没有控制台窗口。
@@ -217,6 +222,7 @@ SDL3 支持的平台就是本项目支持的平台（Windows/Linux/macOS/等）�
 - [x] 命中三态 query + isDirty 生命周期（静态查表、动态自判，按 zindex 合并）
 - [x] 重绘方案：与输入独立的一路（`RedrawScheduler`），外观写入口明确调 `makeDirty()`
 - [x] 最小完整测试 `examples/menu_bar`（顶部 3 按钮菜单栏，点击只写日志）
+- [x] 悬停放大：几何变化 → 标脏 → 上层重烘（`examples/hover_grow`，半透明混色已开）
 - [ ] SDF 形状层
 - [ ] 样式/渲染层
 - [ ] 描述文件 + 代码生成器
