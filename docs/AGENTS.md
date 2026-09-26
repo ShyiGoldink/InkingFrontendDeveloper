@@ -14,6 +14,8 @@
 
 - [README.md](../README.md)：项目介绍、快速开始、环境要求、FAQ（人/AI 通用）
 - [SETUP.md](SETUP.md)：SDL3 安装与配置（Windows/Linux/macOS、源码、本地目录）
+- [../cmake/CMakeUserPaths.cmake.example](../cmake/CMakeUserPaths.cmake.example)：
+  本机依赖路径覆盖模板（复制成同目录的 `CMakeUserPaths.cmake` 即生效）
 - [API.md](API.md)：对外 API 设计稿（关键词、可配置内容、各组件）
 - [InputDesign.md](InputDesign.md)：输入与命中方案设计稿（静态查表 / 动态自判 / 三态 query）
 - [DevelopLog.md](DevelopLog.md)：开发日志（每一步做了什么、为什么）
@@ -29,6 +31,9 @@
 5. **事件分发 = 自上而下直线命中**，由代码生成器展开。
 6. **代码生成器**：解析类 JSON 的描述文件，把控件展开成具体结构体 +
    直线 if 分发。生成代码进 `build/` 产物目录，不放进源码树。
+7. **依赖来源必须显式可控**：SDL3 由 `INK_SDL3_SOURCE`（auto / system /
+   fetch / local）决定，别把某个来源写死进流程。本机路径写
+   `cmake/CMakeUserPaths.cmake`（gitignore），不要往仓库里塞绝对路径。
 
 ## 4. Agent 改动后的自检清单
 
@@ -37,8 +42,10 @@
 1. 语法/结构检查：新增文件、CMake、JSON 是否合法；
 2. 完整构建必须绿：
    `cmake --preset msys2-debug && cmake --build --preset msys2-debug`
-   没装系统 SDL3 时，用仓库里预放的本地目录：
-   `cmake -B build/msys2-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug -DINK_SDL3_LOCAL_DIR=third_party/sdl3`
+   没装系统 SDL3 时，用仓库里预放的本地目录（`local` = 不联网也不查系统）：
+   `cmake --preset msys2-debug -DINK_SDL3_SOURCE=local -DINK_SDL3_LOCAL_DIR=third_party/sdl3`
+   这台机器没装 Ninja 时改用不带预设、不带 `-G` 的两行：
+   `cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build --parallel`
 3. 跑自检 `build/msys2-debug/bin/ink_test.exe`，退出码 0 才算过；
    要连窗口主循环一起验，加环境变量 `INK_AUTOQUIT=1`（约 2 秒后自动退出）；
 4. 更新本文档/README/SETUP 中与实现不一致的内容；
@@ -46,8 +53,9 @@
 
 ## 5. 当前阶段
 
-- 已有：顶层 CMake（可 add_subdirectory）、SDL3 三层引入策略
-  （显式本地目录 / 系统包 / FetchContent 源码）、最小开窗示例（letterbox）；
+- 已有：顶层 CMake（可 add_subdirectory）、SDL3 来源策略
+  `INK_SDL3_SOURCE`（auto / system / fetch / local）+ 本机路径覆盖文件
+  `cmake/CMakeUserPaths.cmake`、最小开窗示例（letterbox）；
 - 已有：从后端框架移植的日志（HTML）、消息队列、任务队列、线程池，
   以及 ISDEBUG / ISLOG / ISMESSAGE 三个编译期开关；
 - 已有：InkingWindow 单例（窗口尺寸是运行期属性，设计尺寸是编译期常量）；
@@ -91,3 +99,13 @@
    MinGW 下源码照旧写 `int main()`，mingw-w64 运行时会把它叫起来，
    别改成 `WinMain`。副作用：双击运行时 printf / SDL_Log 一律看不到
    （从终端启动能看到，标准句柄是继承来的），要看输出就用 Debug 构建。
+10. **预设写死 Ninja，而这个错项目自己拦不住**：CMake 在读到任何
+    `CMakeLists.txt` 之前就要解析生成器，没装 Ninja 时配置直接失败，报的是
+    `CMake Error: CMake was unable to find a build program corresponding to
+    "Ninja"`。所以两条路都得留着：装了 Ninja 用预设；没装就别用预设、
+    也别写 `-G Ninja`（写不写都一样失败），用 `cmake -S . -B build`——
+    `CMakeLists.txt` 本身与生成器无关，走系统默认生成器即可。
+11. **第二次配置不会再拉源码**：FetchContent 的源码留在
+    `build/<预设>/_deps/`，重配置只要 1 秒左右且不联网（已实测）。
+    换 SDL3 版本或换来源，改 `INK_SDL3_SOURCE` / `INK_SDL3_GIT_TAG` 后
+    重新配置就行；只有 `--fresh` 或删构建目录才会真的重新联网。

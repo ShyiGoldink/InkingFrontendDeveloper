@@ -8,7 +8,7 @@
 - 渲染层：DrawCall 合批 + 静态烘焙，不做 CPU 逐像素渲染
 - 布局：百分比 + 对齐点（含 `Layout::Middle`，即 50%）
 - 事件分发：自上而下直线命中，由代码生成器展开
-- SDL3 引入：显式本地目录 → 系统包 → FetchContent 源码
+- SDL3 来源：`INK_SDL3_SOURCE` 四选一（auto / system / fetch / local）
 
 当前处于**工程骨架**阶段：已有顶层 CMake、SDL3 引入策略和最小开窗
 示例；SDF 形状层、渲染层、代码生成器尚未实现。
@@ -19,56 +19,81 @@
 | --- | --- | --- |
 | CMake | 3.25 | 配置与构建 |
 | C++ 编译器 | C++20 支持 | 已测试 MSYS2 UCRT64 g++ 14/16；理论上支持 GCC/Clang/MSVC |
-| Ninja | 1.10 | 推荐生成器；也可用 Make/VS |
-| Git | 2.x | 拉取 SDL3 源码（FetchContent 时） |
-| SDL3 | 3.2+ | 见下文“SDL3 引入方式” |
+| Ninja | 1.10 | CMake 预设（`msys2-*`）用的生成器；没装也能构建，见“没有 Ninja 时” |
+| Git | 2.x | 拉取 SDL3 源码（`INK_SDL3_SOURCE=fetch` 时） |
+| SDL3 | 3.2+ | 见下文“SDL3 来源” |
 
 ## 快速开始
 
-### 方式 1：系统已安装 SDL3
+### 先说生成器
 
-项目会通过 `find_package(SDL3 CONFIG)` 自动找到系统 SDL3。
+预设（`msys2-debug` / `msys2-release` / `test-debug`）用的是 Ninja：
+
+```sh
+pacman -S mingw-w64-ucrt-x86_64-ninja   # MSYS2 UCRT64
+apt install ninja-build                 # Debian/Ubuntu
+brew install ninja                      # macOS
+```
+
+没装 Ninja 也能构建，看下面“没有 Ninja 时”。
+
+### 默认路径：自动挑 SDL3 来源
 
 ```sh
 cmake --preset msys2-debug
 cmake --build --preset msys2-debug
 ```
 
-如果 SDL3 装在非标准位置，用 `CMAKE_PREFIX_PATH` 指定：
+来源由 `INK_SDL3_SOURCE` 决定，默认 `auto`；配置日志会打印实际用了哪一个：
 
-```sh
-cmake -B build/msys2-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-  -DCMAKE_PREFIX_PATH=/path/to/your/sdl3
+```text
+Inking: SDL3 来源策略 = auto
+Inking: using system SDL3 (3.4.2)              # 用了系统包
+Inking: using local SDL3 (3.4.2) at ...        # 用了 INK_SDL3_LOCAL_DIR
+Inking: SDL3 not found, fetching source tag release-3.4.2...
+Inking: SDL3 built from source (release-3.4.2) # 拉源码一起编译
 ```
 
-### 方式 2：自动拉取 SDL3 源码（默认，需要网络）
+| `-DINK_SDL3_SOURCE=` | 行为 |
+| --- | --- |
+| `auto`（默认） | 设了 `INK_SDL3_LOCAL_DIR` 就用它；否则找系统包；都没有才拉源码 |
+| `system` | 只用系统装的 SDL3；找不到直接报错，不联网 |
+| `fetch` | 总是拉官方源码一起编译，忽略系统里装了什么 |
+| `local` | 只用 `INK_SDL3_LOCAL_DIR` 指的目录，不联网也不查系统 |
 
-未检测到系统 SDL3 时，CMake 会自动从官方 GitHub 拉取
-`release-3.4.2` 源码一起编译：
-
-```sh
-cmake --preset msys2-debug
-cmake --build --preset msys2-debug
-```
-
-想切换 SDL3 版本：
+### 指定本地 SDL3（离线推荐）
 
 ```sh
-cmake -B build/msys2-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-  -DINK_SDL3_GIT_TAG=release-3.4.2
-```
-
-### 方式 3：本地 SDL3 目录（无需网络，推荐离线使用）
-
-把 SDL3 安装/解压到一个本地目录（平铺布局或 `x86_64-w64-mingw32/`
-这类三元组布局都支持），然后配置时指定：
-
-```sh
-cmake -B build/msys2-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+cmake --preset msys2-debug -DINK_SDL3_SOURCE=local \
   -DINK_SDL3_LOCAL_DIR=C:/path/to/your/sdl3
 ```
 
-这是显式选项，优先于系统 SDL3，也不联网拉源码。
+平铺布局和 `x86_64-w64-mingw32/` 这类三元组布局都认。想每次配置都不敲
+`-D`，就把这两行写进 `cmake/CMakeUserPaths.cmake`（该文件被 gitignore，
+存在即自动加载），模板见 `cmake/CMakeUserPaths.cmake.example`。
+
+### 指定只拉源码编译（需要网络）
+
+```sh
+cmake --preset msys2-debug -DINK_SDL3_SOURCE=fetch
+
+# 换版本
+cmake --preset msys2-debug -DINK_SDL3_SOURCE=fetch \
+  -DINK_SDL3_GIT_TAG=release-3.4.2
+```
+
+### 没有 Ninja 时
+
+预设只是便利，`CMakeLists.txt` 本身与生成器无关。不用预设、不指定生成器，
+走系统默认（Linux/macOS 是 Make）即可：
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --parallel
+```
+
+注意别顺手加 `-G Ninja`：没装 Ninja 时它会在读到 `CMakeLists.txt`
+之前就失败，报的是 `CMAKE_MAKE_PROGRAM is not set` 这种不好懂的错。
 
 ### 无头冒烟（可选）
 
@@ -87,7 +112,8 @@ INK_AUTOQUIT=1 build/msys2-debug/bin/ink_test.exe       # 自检 + 跑一次窗�
 ├─ CMakeLists.txt           顶层构建：库 + 示例；支持被 add_subdirectory
 ├─ CMakePresets.json        CMake 预设（msys2-debug / msys2-release / test-debug）
 ├─ cmake/
-│  └─ SDL3.cmake             SDL3 引入策略（本地目录 / 系统 / FetchContent）
+│  ├─ SDL3.cmake             SDL3 来源策略（auto / system / fetch / local）
+│  └─ CMakeUserPaths.cmake.example  本机路径覆盖模板（复制去掉 .example 即生效）
 ├─ docs/
 │  ├─ README.md              本文件
 │  ├─ SETUP.md               SDL3 安装与配置指南（跨平台）
@@ -104,12 +130,15 @@ INK_AUTOQUIT=1 build/msys2-debug/bin/ink_test.exe       # 自检 + 跑一次窗�
 ## 常用命令
 
 ```sh
-# 配置 + 构建（真实 SDL3）
+# 配置 + 构建（来源自动挑，默认路径）
 cmake --preset msys2-debug && cmake --build --preset msys2-debug
 
 # 配置 + 构建（用仓库里预放的本地 SDL3，不联网）
-cmake -B build/msys2-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-  -DINK_SDL3_LOCAL_DIR=third_party/sdl3 && cmake --build build/msys2-debug
+cmake --preset msys2-debug -DINK_SDL3_SOURCE=local \
+  -DINK_SDL3_LOCAL_DIR=third_party/sdl3 && cmake --build --preset msys2-debug
+
+# 配置 + 构建（这台机器没装 Ninja 时）
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build --parallel
 
 # Release
 cmake --preset msys2-release && cmake --build --preset msys2-release
@@ -122,8 +151,11 @@ cmake --preset msys2-release && cmake --build --preset msys2-release
 cmake --find-package -DNAME=SDL3 -DCOMPILER_ID=GNU -DLANGUAGE=C \
   -DMODE=EXIST
 
-# 或直接看 CMake 配置日志里的 "Inking: using ... SDL3"
-cmake -B /tmp/ink-check -G Ninja -DCMAKE_BUILD_TYPE=Debug
+# 或让配置自己说清楚：日志里会打印用了哪个来源
+cmake -S . -B /tmp/ink-check -DCMAKE_BUILD_TYPE=Debug
+
+# 只允许用系统包，找不到就报错（不偷偷联网）
+cmake -S . -B /tmp/ink-check-system -DINK_SDL3_SOURCE=system
 ```
 
 ## SDL3 安装指引
@@ -143,11 +175,12 @@ cmake -B /tmp/ink-check -G Ninja -DCMAKE_BUILD_TYPE=Debug
 ## FAQ
 
 **这个库能不能不用 SDL3？**
-不能，SDL3 是唯一底层依赖。要离线构建，就用本地 SDL3 目录那条路。
+不能，SDL3 是唯一底层依赖。要离线构建，就用 `INK_SDL3_SOURCE=local`
+指向本地 SDL3 目录。
 
 **谁使用这个库？**
 源码分发。使用方通过 `add_subdirectory` 或 `FetchContent` 引入本库，
-SDL3 自动按“显式本地目录 → 系统包 → 源码”策略解决。
+SDL3 由 `INK_SDL3_SOURCE` 决定从哪来（默认 auto：本地目录 → 系统包 → 源码）。
 
 **哪些系统支持？**
 SDL3 支持的平台就是本项目支持的平台（Windows/Linux/macOS/等）。

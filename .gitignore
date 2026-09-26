@@ -8,3 +8,7 @@ cmake-build-*/
 
 # 下载/解压得到的 SDL3（依赖产物，不属于本仓库源码）
 third_party/sdl3/
+
+# 本机专属的依赖路径覆盖与本地预设：只属于当前这台机器，不进版本库
+cmake/CMakeUserPaths.cmake
+CMakeUserPresets.json

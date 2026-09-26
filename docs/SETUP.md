@@ -3,9 +3,13 @@
 本文档说明如何为 InkingFrontendDeveloper 准备 SDL3 环境，覆盖
 Windows（MSYS2）、Linux、macOS，以及“没有 SDL3 时”的做法。
 
-> 提示：项目 CMake 的查找顺序是
-> `显式的本地目录 → 系统 SDL3 → FetchContent 源码`。
-> 显式选项优先级最高：只要你指定了目录，就不会再去自动检测。
+> 提示：SDL3 从哪来由 `INK_SDL3_SOURCE` 决定，四选一：
+> `auto`（默认，本地目录 → 系统包 → 拉源码）/ `system`（只用系统包）/
+> `fetch`（总是拉源码）/ `local`（只用 `INK_SDL3_LOCAL_DIR`）。
+> 显式指定的来源不会被静默替换：说好用哪个，用不了就直接报错。
+>
+> 本机路径不想每次敲 `-D`，写进 `cmake/CMakeUserPaths.cmake`（被
+> gitignore，存在即自动加载），模板见 `cmake/CMakeUserPaths.cmake.example`。
 
 ## 0. 先确认有没有 SDL3
 
@@ -23,9 +27,31 @@ cmake --find-package -DNAME=SDL3 -DCOMPILER_ID=GNU -DLANGUAGE=C -DMODE=EXIST
 也可以直接跑一次 `cmake --preset msys2-debug`，看配置日志开头：
 
 ```text
+Inking: SDL3 来源策略 = auto
 Inking: using local SDL3 (3.x.y) at ...   # 用了 INK_SDL3_LOCAL_DIR
 Inking: using system SDL3 (3.x.y)         # 用了系统包
-Inking: SDL3 not found, fetching ...      # 将尝试 FetchContent
+Inking: SDL3 not found, fetching ...      # 都没有，去拉源码
+Inking: SDL3 built from source (3.x.y)    # 源码编译完成
+```
+
+### 生成器：Ninja（预设需要）
+
+`CMakePresets.json` 里的预设（`msys2-debug` / `msys2-release` /
+`test-debug`）用的是 Ninja，装一条命令就够：
+
+```sh
+pacman -S mingw-w64-ucrt-x86_64-ninja   # MSYS2 UCRT64
+apt install ninja-build                 # Debian/Ubuntu
+dnf install ninja-build                 # Fedora
+brew install ninja                      # macOS
+```
+
+没装 Ninja 也能构建，只是别用预设，也别写 `-G Ninja`（没装时它会在
+读到 `CMakeLists.txt` 之前就失败，报 `CMAKE_MAKE_PROGRAM is not set`）：
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --parallel
 ```
 
 ## 1. Windows（推荐 MSYS2）
@@ -83,11 +109,18 @@ MSYS2 那样装在 `<dir>/x86_64-w64-mingw32/lib/cmake/SDL3/` 的三元组
 
 ```sh
 cmake -B build/msys2-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug `
+  -DINK_SDL3_SOURCE=local `
   -DINK_SDL3_LOCAL_DIR=D:/InkingFrontendDeveloper/third_party/sdl3
 ```
 
-这是显式选项，**优先于系统 SDL3**：指定了就一定用它。脚本会自动挑
-与本机位数匹配的三元组目录（64 位优先 `x86_64-*`）。
+`local` 的含义是“只用这里，不联网也不查系统”。脚本会自动挑与本机位数
+匹配的三元组目录（64 位优先 `x86_64-*`）。
+
+如果不想每次配置都带这两个 `-D`，把同样两行写进
+`cmake/CMakeUserPaths.cmake`（被 gitignore，存在即自动加载），之后直接
+`cmake --preset msys2-debug` 就走本地目录。模板见
+`cmake/CMakeUserPaths.cmake.example`；用 `set(变量 值 CACHE 类型 "说明")`
+的写法，命令行上的 `-D` 仍然可以临时覆盖它。
 
 ## 2. Linux
 
@@ -157,7 +190,9 @@ FetchContent_MakeAvailable(ink)
 ## 5. 常见问题
 
 **Q：FetchContent 一直失败，说连不上 GitHub？**
-网络受限。改用系统包 / 本地目录（见第 1 节）。
+网络受限。改用系统包或本地目录，并顺手把来源钉死，免得它再偷偷联网：
+`-DINK_SDL3_SOURCE=system` 或 `-DINK_SDL3_SOURCE=local -DINK_SDL3_LOCAL_DIR=<目录>`
+（见第 1 节）。
 
 **Q：装了包但 CMake 还是拉源码？**
 确认 `SDL3Config.cmake` 所在的目录在 `CMAKE_PREFIX_PATH` 里，
@@ -168,19 +203,25 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DCMAKE_PREFIX_PATH=/path/to/your/sdl3
 ```
 
+也可以直接用 `-DINK_SDL3_SOURCE=system` 强制只用系统包：找到了就用，
+没找到会直接把上面的排查步骤打进错误信息里，不会再退回拉源码。
+
 **Q：UCRT64 工具链能用官方 MSVCRT 版 SDL3 吗？**
 能编译、能链接、简单场景也能跑，但会同时加载 `ucrtbase` 和 `msvcrt`
 两套 C 运行时。生产建议用与工具链匹配的包（UCRT64 → 带 `ucrt` 的包）。
 
 **Q：系统装了 SDL3，同时指定了本地目录，用哪个？**
-显式选项优先。设了 `INK_SDL3_LOCAL_DIR` 就不会再走系统包自动检测。
+看 `INK_SDL3_SOURCE`。默认 `auto` 时本地目录优先，设了
+`INK_SDL3_LOCAL_DIR` 就不会再走系统检测；`system` 则反过来，只认系统包，
+此时本地目录不参与。
 
 **Q：运行时报找不到 SDL3.dll？**
 Windows 上把 `SDL3.dll` 所在目录加入 PATH，或拷贝到可执行文件旁边。
 
 **Q：不想联网，也不想装系统包？**
-用本地目录（方案 D）。仓库里预放了一份 SDL3 在 `third_party/sdl3`，
-没有的话照第 6 节手动下载一份即可。
+用本地目录（方案 D）：`-DINK_SDL3_SOURCE=local -DINK_SDL3_LOCAL_DIR=...`。
+仓库里预放了一份 SDL3 在 `third_party/sdl3`，没有的话照第 6 节手动
+下载一份即可。
 
 ## 6. 手动下载 SDL3（离线机器）
 

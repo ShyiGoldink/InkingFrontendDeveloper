@@ -15,15 +15,16 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 include(GNUInstallDirs)
 
 # ---------------------------------------------------------------------------
-# 编译期开关（关键词：ISDEBUG / ISLOG）
+# 编译期开关（关键词：ISDEBUG / ISLOG / ISMESSAGE）
 #
-#   ISDEBUG -> INK_ISDEBUG  调试级日志与调试断言
-#   ISLOG   -> INK_ISLOG    日志系统，写可执行文件同级的 Log.html
+#   ISDEBUG   -> INK_ISDEBUG    调试级日志与调试断言
+#   ISLOG     -> INK_ISLOG      日志系统，写可执行文件同级的 Log.html
+#   ISMESSAGE -> INK_ISMESSAGE  消息队列，UI 线程之外的消息入口
 #
-# 两者都是**编译期**开关：关掉时 INK_LOG_* 宏展开为 ((void)0)，
-# 参数不求值、字符串不拼接、日志代码不进二进制。
+# 三者都是**编译期**开关：关掉时对应的宏展开为 ((void)0)，参数不求值、
+# 字符串不拼接、对应的实现文件也不参与编译，代码完全不进二进制。
 #
-# ISDEBUG 默认跟随构建类型（Debug 构建默认打开）；ISLOG 默认打开。
+# ISDEBUG 默认跟随构建类型（Debug 构建默认打开）；ISLOG / ISMESSAGE 默认打开。
 # ---------------------------------------------------------------------------
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(_ink_isdebug_default ON)
@@ -33,21 +34,36 @@ endif()
 
 option(ISDEBUG "调试输出与调试断言（定义 INK_ISDEBUG）" ${_ink_isdebug_default})
 option(ISLOG "日志系统，写可执行文件同级的 Log.html（定义 INK_ISLOG）" ON)
+option(ISMESSAGE "消息队列参与编译（定义 INK_ISMESSAGE）" ON)
 
 option(INK_BUILD_EXAMPLES "构建示例程序" ${PROJECT_IS_TOP_LEVEL})
 option(INK_BUILD_TESTS "构建测试程序" ${PROJECT_IS_TOP_LEVEL})
 
-# SDL3：显式本地目录优先，其次系统安装版本，都没有则拉取官方源码。
+# ---------------------------------------------------------------------------
+# 本机依赖路径覆盖
+#
+# 该文件被 gitignore，只属于当前这台机器：存在就自动加载，不存在就跳过。
+# 这样"SDL3 装在哪""本机要不要固定用某个来源"这类事情写一次就够，
+# 不必每次配置都在命令行上重敲 -D。模板见 cmake/CMakeUserPaths.cmake.example。
+# ---------------------------------------------------------------------------
+set(INK_USER_PATHS_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CMakeUserPaths.cmake"
+    CACHE FILEPATH "本机依赖路径覆盖文件（被 gitignore，不存在则忽略）")
+if(EXISTS "${INK_USER_PATHS_FILE}")
+    include("${INK_USER_PATHS_FILE}")
+    message(STATUS "Inking: 已加载本机依赖路径覆盖 ${INK_USER_PATHS_FILE}")
+endif()
+
+# SDL3：来源由 INK_SDL3_SOURCE 决定，默认 auto（本地目录 → 系统包 → 拉源码）。
 include(cmake/SDL3.cmake)
 
 # ---------------------------------------------------------------------------
 # 核心库
 # ---------------------------------------------------------------------------
 set(INK_CORE_SOURCES
+    src/ink/basic/InkingAnchor.cpp
     src/ink.cpp
     src/ink/thread/ThreadPool.cpp
     src/ink/thread/TaskQueue.cpp
-    src/ink/ui/MessageQueue.cpp
     src/input/MouseInput.cpp
     src/window/InkingWindow.cpp)
 
@@ -55,6 +71,12 @@ set(INK_CORE_SOURCES
 # 关闭时 InkLog 在头文件里退化成空实现，所以不会出现链接错误。
 if(ISLOG)
     list(APPEND INK_CORE_SOURCES src/ink/basic/InkLog.cpp)
+endif()
+
+# 消息队列同理：ISMESSAGE 关闭时 MessageQueue 在头文件里退化成空实现，
+# 实现文件不参与编译，队列本体和它依赖的存储都不进二进制。
+if(ISMESSAGE)
+    list(APPEND INK_CORE_SOURCES src/ink/ui/MessageQueue.cpp)
 endif()
 
 add_library(ink_core STATIC ${INK_CORE_SOURCES})
@@ -79,6 +101,9 @@ if(ISDEBUG)
 endif()
 if(ISLOG)
     target_compile_definitions(ink_core PUBLIC INK_ISLOG=1)
+endif()
+if(ISMESSAGE)
+    target_compile_definitions(ink_core PUBLIC INK_ISMESSAGE=1)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -114,4 +139,3 @@ if(INK_BUILD_TESTS)
     target_compile_features(ink_test PRIVATE cxx_std_20)
     add_test(NAME ink_test COMMAND ink_test)
 endif()
-

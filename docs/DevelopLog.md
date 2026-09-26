@@ -19,13 +19,8 @@
 > - ThreadPool → include/ink/thread/ThreadPool.h（管家线程池）
 > - TaskStruct.h → include/ink/dataStruct/TaskStruct.h（dependOn / then）
 > - MessageStruct.h → include/ink/dataStruct/MessageStruct.h
->
-> 与后端的差异（有意为之）：
->
-> 1. 没有移植 ShineBasicModule / ShineStatusChecker 那套自检体系；
-> 2. 线程池的线程数从固定常量改成 init() 的参数，默认 4；
-> 3. 日志多了一档 warn，消息类型多了一档 Warn。
->
-> 开关的落地方式：CMake 选项 ISDEBUG / ISLOG → 宏 INK_ISDEBUG / INK_ISLOG，
-> 以 PUBLIC 方式挂在 ink_core 上（库和调用方必须看到同一套宏，否则 ODR 违规）。
-> ISLOG 关闭时 InkLog.cpp 不参与编译，头文件里的 InkLog 退化成空实现。
+
+## Step 3
+
+> 做好鼠标输入事件，并绑入InkingWindow中
+> 仿照ShineBasic写InkingAnchor，奠定整个项目的定位结构
