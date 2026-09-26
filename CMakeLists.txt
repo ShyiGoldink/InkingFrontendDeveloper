@@ -64,7 +64,14 @@ set(INK_CORE_SOURCES
     src/ink.cpp
     src/ink/thread/ThreadPool.cpp
     src/ink/thread/TaskQueue.cpp
+    src/core/RedrawScheduler.cpp
     src/input/MouseInput.cpp
+    src/scene/Button.cpp
+    src/scene/HitTable.cpp
+    src/scene/InkingScene.cpp
+    src/scene/InputRouter.cpp
+    src/scene/SceneRegistry.cpp
+    src/window/SdlCanvas.cpp
     src/window/InkingWindow.cpp)
 
 # 日志实现只在 ISLOG 打开时才参与编译；
@@ -130,6 +137,7 @@ endif()
 # ---------------------------------------------------------------------------
 if(INK_BUILD_EXAMPLES)
     add_subdirectory(examples/basic)
+    add_subdirectory(examples/menu_bar)
 endif()
 
 if(INK_BUILD_TESTS)

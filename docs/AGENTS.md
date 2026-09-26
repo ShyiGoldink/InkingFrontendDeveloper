@@ -48,6 +48,13 @@
    `cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build --parallel`
 3. 跑自检 `build/msys2-debug/bin/ink_test.exe`，退出码 0 才算过；
    要连窗口主循环一起验，加环境变量 `INK_AUTOQUIT=1`（约 2 秒后自动退出）；
+   想连"窗口 + 菜单栏 + 点击"一起看，跑示例：
+   `INK_AUTOQUIT=1 build/msys2-debug/bin/menu_bar.exe`（点按钮只写日志；
+   退出时会把「静态表重烘几次 / hover query 几次 / 重绘几帧 / 跳过几帧」
+   打进 Log.html）；
+   没有显示器、又想确认"到底画成什么样"，加 `INK_DUMPFRAME=<路径.bmp>`：
+   第一帧真实画出来的画面会存成 BMP（转储在 present 之前，否则后台缓冲
+   内容不保证还在）；
 4. 更新本文档/README/SETUP 中与实现不一致的内容；
 5. 不要在源码树里提交 `build/` 产物。
 
@@ -60,12 +67,20 @@
   以及 ISDEBUG / ISLOG / ISMESSAGE 三个编译期开关；
 - 已有：InkingWindow 单例（窗口尺寸是运行期属性，设计尺寸是编译期常量）；
 - 已有：事件泵与鼠标输入接入——`InkingWindow::Show()` 里就是主循环
-  （事件泵 → 鼠标状态 → 窗口坐标换算设计坐标 → 占位绘制 → 帧末清理），
-  鼠标状态在 `include/input/MouseInput.h`；
-- 未实现：Scene 层（`include/scene`、`src/scene` 还是空文件）、
-  SDF 形状层、样式/渲染层、描述文件 + 代码生成器；
-  绘制目前只有占位（`src/window/InkingWindow.cpp` 的 `drawPlaceholder`：
-  清屏 + 一个跟着鼠标的小方块，用来肉眼验证坐标换算），Canvas/场景绘制接手后删掉。
+  （事件泵 → 鼠标状态 → 窗口坐标换算设计坐标 → 输入 query → 每帧更新 →
+  按需重绘 → 帧末清理），鼠标状态在 `include/input/MouseInput.h`；
+- 已有（**test002 原型**，`include/scene` + `src/scene` + `include/core`）：
+  - `InkingScene`（继承 InkingAnchor，锚点定位、构造即注册、可见性写入口、
+    三态 `Query`、静态烘焙与平铺绘制表、动态洞）；
+  - 静态层：网格表 + CSR 候选兜底，等宽等距容器走纯算术专用查找；
+  - 输入：`InputRouter` 的 isDirty + 帧计数 + 三态 query，点击单独查一次；
+  - 重绘：`RedrawScheduler`（文档外的独立一路），约定「需要重绘的属性由写入口
+    明确调 `makeDirty()`」；
+  - SDL 后端画布 `src/window/SdlCanvas.h`；示例 `examples/menu_bar`
+    （顶部 3 按钮菜单栏，点击只写日志）。
+- 未实现：SDF 形状层、样式层、描述文件 + 代码生成器、聚类索引 / 溢出桶 /
+  变换通道与动画采样表；场景层的运行期位置与尺寸写入口还没按文档去掉
+  （现在是手写原型，生成器接手后是编译期定死）。
 
 ## 6. 已知坑（真实踩过的）
 
@@ -109,3 +124,22 @@
     `build/<预设>/_deps/`，重配置只要 1 秒左右且不联网（已实测）。
     换 SDL3 版本或换来源，改 `INK_SDL3_SOURCE` / `INK_SDL3_GIT_TAG` 后
     重新配置就行；只有 `--fresh` 或删构建目录才会真的重新联网。
+12. **等宽等距专用查找要分两份顺序存**：算术定位（`index = (x - 行首) / (槽宽 + 槽间距)`）
+    必须让槽位按 **x 升序**存，查询又必须按 **z 降序**扫。一开始只用一份
+    「z 降序」的数组，结果行首取到的是最右边那一槽，三个按钮全查不中。
+    现在 `SlotIndex` 存两份：`_slots`（行序）+ `_queryOrder`（查询序）。
+13. **专用查找只接手"规整的行"**：槽位不等宽 / 不等高 / 不等间距，或者槽位自己
+    还带子节点，就别用它，退回网格表（`SlotIndex::Build` 返回 false，
+    场景打一条警告日志）。生成器接手后这类判断应该在编译期做掉。
+14. **动态子树移动不能标父表的脏**：洞不参与父表重烘，否则一个每帧都在动的
+    组件会让整张静态表每帧重烘一次。标脏的循环遇到动态结点就停
+    （它不进表），只把「命中可能过期」这个 bool 标到根上给输入层。
+15. **重绘和命中是两套独立脏标记**：外观（颜色 / 文字 / 悬停 / 按下）只标重绘，
+    不该标命中；反过来，输入 query 本身也不该触发重绘。混在一起就会出现
+    「鼠标划过一下，静态表就重烘一次」。约定见 `include/core/RedrawScheduler.h`。
+16. **`makeDirty()` 不做自动分析**：需要重绘的属性由写入口**明确**调它
+    （`Button::SetFill` / 悬停 / 按下都是这么标的），框架不替写入口猜。
+    几何 / 可见性 / 层级则由 `[final]` 写入口内部顺带标一次，漏不了。
+17. **新实现文件记得进 `INK_CORE_SOURCES`**：窗口层的 `SdlCanvas.h` 放在
+    `src/window/` 而不是 `include/`，同目录用 `#include "SdlCanvas.h"`；
+    写成 `<window/SdlCanvas.h>` 会报找不到头文件（`include/` 才是搜索根）。

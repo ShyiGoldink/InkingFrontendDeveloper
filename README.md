@@ -10,8 +10,10 @@
 - 事件分发：自上而下直线命中，由代码生成器展开
 - SDL3 来源：`INK_SDL3_SOURCE` 四选一（auto / system / fetch / local）
 
-当前处于**工程骨架**阶段：已有顶层 CMake、SDL3 引入策略和最小开窗
-示例；SDF 形状层、渲染层、代码生成器尚未实现。
+当前处于**工程骨架 + 场景层原型**阶段：已有顶层 CMake、SDL3 引入策略、最小开窗
+示例、锚点系统，以及（`test002` 分支上的）场景层原型——静态层级方案、
+isDirty + 三态 query 的输入、和独立实现的按需重绘；SDF 形状层、样式层、
+代码生成器尚未实现。
 
 ## 环境要求
 
@@ -118,9 +120,12 @@ INK_AUTOQUIT=1 build/msys2-debug/bin/ink_test.exe       # 自检 + 跑一次窗�
 │  ├─ README.md              本文件
 │  ├─ SETUP.md               SDL3 安装与配置指南（跨平台）
 │  └─ AGENTS.md              Agent 开发入口
+├─ include/core/             场景层的地基：矩形、颜色、画布抽象、重绘调度
+├─ include/scene/            场景层：InkingScene / 命中索引 / 输入路由 / 按钮
 ├─ include/ink/              公共头文件（对外 API）
-├─ src/                      核心库源码
+├─ src/                      核心库源码（core / scene / window / input / ink）
 ├─ examples/basic/           最小开窗示例（1280×720 letterbox）
+├─ examples/menu_bar/        顶部 3 按钮菜单栏（静态层 + 重绘方案的最小完整测试）
 └─ third_party/sdl3/         本地 SDL3 安装（可选，手动放入）
 ```
 
@@ -187,6 +192,11 @@ SDL3 支持的平台就是本项目支持的平台（Windows/Linux/macOS/等）�
 
 **当前能跑哪些示例？**
 `examples/basic`：开一个 1280×720 letterbox 窗口并绘制占位色块。
+`examples/menu_bar`：一个窗口 + 顶部一条 3 个按钮的菜单栏，点击只写日志与
+调试输出；用来验静态层级方案（等宽等距走算术查找）、重绘方案
+（`makeDirty()` + 帧计数）和 zindex。跑法：
+`INK_AUTOQUIT=1 build/msys2-debug/bin/menu_bar.exe`（退出时会把这一趟的账
+写进 Log.html）。
 
 **Release 构建双击运行，为什么什么都看不到？**
 `ISDEBUG` 关闭时可执行文件是 GUI 子系统，本来就没有控制台窗口。
@@ -202,7 +212,11 @@ SDL3 支持的平台就是本项目支持的平台（Windows/Linux/macOS/等）�
 - [x] 编译期开关 ISDEBUG / ISLOG / ISMESSAGE：关闭后对应代码不进二进制
       （ISDEBUG 关闭时连控制台窗口一起去掉）
 - [x] InkingWindow 单例（窗口尺寸运行期可调，设计尺寸是编译期常量）
-- [x] 事件泵 + 鼠标输入接入（`Show()` 内主循环；绘制仍是占位）
+- [x] 事件泵 + 鼠标输入接入（`Show()` 内主循环）
+- [x] 场景层原型（`test002`）：InkingScene（锚点定位 + 静态烘焙 + 平铺绘制表）
+- [x] 命中三态 query + isDirty 生命周期（静态查表、动态自判，按 zindex 合并）
+- [x] 重绘方案：与输入独立的一路（`RedrawScheduler`），外观写入口明确调 `makeDirty()`
+- [x] 最小完整测试 `examples/menu_bar`（顶部 3 按钮菜单栏，点击只写日志）
 - [ ] SDF 形状层
 - [ ] 样式/渲染层
 - [ ] 描述文件 + 代码生成器

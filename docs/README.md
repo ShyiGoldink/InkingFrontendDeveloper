@@ -43,6 +43,10 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build --parallel
 - [x] 日志系统（HTML）、消息队列、任务队列与线程池
 - [x] 编译期开关 ISDEBUG / ISLOG / ISMESSAGE（关闭后对应代码不进二进制）
 - [x] InkingWindow 单例 + 事件泵 + 鼠标输入接入（绘制仍是占位）
+- [x] 场景层原型（`test002`）：静态烘焙（命中索引 + 平铺绘制表，等宽等距走算术查找）
+- [x] 输入：isDirty + 三态 query（Block / PassThrough / Miss）+ 显式 zindex
+- [x] 重绘：与输入独立的一路，需要重绘的属性由写入口明确调 `makeDirty()`
+- [x] 最小完整测试 `examples/menu_bar`（一个窗口 + 顶部 3 按钮菜单栏，点击只写日志）
 - [ ] SDF 形状层
 - [ ] 样式/渲染层
 - [ ] 描述文件 + 代码生成器

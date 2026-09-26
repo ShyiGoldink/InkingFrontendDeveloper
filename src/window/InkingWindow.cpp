@@ -1,10 +1,17 @@
 #include <window/InkingWindow.h>
 
+#include <core/RedrawScheduler.h>
 #include <ink/basic/InkLog.h>
+#include <ink/ui/MessageQueue.h>
+#include <scene/InkingScene.h>
+#include <scene/InputRouter.h>
+#include <scene/SceneRegistry.h>
+#include "SdlCanvas.h"
 
 #include <SDL3/SDL.h>
 
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <thread>
 
@@ -17,21 +24,16 @@ constexpr const char* kModuleName = "InkingWindow";
 /// 帧节流：vsync 还没接上，先用固定节拍（16ms ≈ 60Hz）。
 constexpr std::chrono::microseconds kFrameInterval{16000};
 
-/// 无头冒烟：设了 INK_AUTOQUIT 就跑这么久然后自己退出。
-///
-/// 计时用 steady_clock：主循环的节流和冒烟计时走同一套单调时钟，
-/// 不掺 SDL 的计时器。
+/// 无头冒烟：设了环境变量 INK_AUTOQUIT 就跑这么久然后自己退出。
 constexpr std::chrono::milliseconds kAutoQuitAfter{2000};
 
-/// 占位绘制的底色，和 basic 示例保持一致；样式层接手后换掉。
-constexpr Uint8 kBackgroundRed   = 18;
-constexpr Uint8 kBackgroundGreen = 18;
-constexpr Uint8 kBackgroundBlue  = 24;
+/// 占位底色，和 basic 示例保持一致；样式层接手后换掉。
+constexpr Color kBackground{18, 18, 24, 255};
 
 /**
  * 窗口的运行期状态。
  *
- * 放在实现文件的匿名命名空间里，是为了让公开头文件保持"零 SDL 依赖"：
+ * 放在实现文件的匿名命名空间里，是为了让公开头文件保持「零 SDL 依赖」：
  * 谁包含 <window/InkingWindow.h> 都不会被迫跟着包含 SDL 的头文件。
  * InkingWindow 本身是单例，这份状态也天然只有一份。
  */
@@ -75,24 +77,66 @@ void releaseWindow(WindowState& s) {
  * （kDesignWidth × kDesignHeight）。换算是渲染器的职责，所以只在这里做一次，
  * 交给场景层的永远是设计坐标。
  */
-void toDesign(SDL_Renderer* renderer, float windowX, float windowY,
-              float& designX, float& designY) {
+void toDesign(SDL_Renderer* renderer, float windowX, float windowY, float& designX,
+              float& designY) {
     designX = windowX;
     designY = windowY;
     if (renderer != nullptr) {
-        SDL_RenderCoordinatesFromWindow(renderer, windowX, windowY,
-                                        &designX, &designY);
+        SDL_RenderCoordinatesFromWindow(renderer, windowX, windowY, &designX, &designY);
+    }
+}
+
+/** SDL 的鼠标键号 → 框架的指针按键。 */
+PointerButton toButton(std::uint8_t sdlButton) {
+    switch (sdlButton) {
+        case SDL_BUTTON_LEFT:   return PointerButton::Left;
+        case SDL_BUTTON_MIDDLE: return PointerButton::Middle;
+        case SDL_BUTTON_RIGHT:  return PointerButton::Right;
+        default:                return PointerButton::Unknown;
+    }
+}
+
+/** 把 UI 消息队列里攒的消息倒进日志——队列就是给 UI 线程这么用的。 */
+void flushMessages() {
+    for (const Message& message : MessageQueue::drainMessages()) {
+        switch (message.type) {
+            case MessageType::Pass:   INK_LOG_PASS(kModuleName, message.message); break;
+            case MessageType::Warn:   INK_LOG_WARN(kModuleName, message.message); break;
+            case MessageType::Error:  INK_LOG_ERROR(kModuleName, message.message); break;
+            case MessageType::Normal: INK_LOG_INFO(kModuleName, message.message); break;
+        }
     }
 }
 
 /**
- * 事件泵：把这一帧攒下的 SDL 事件吃干净，变成 MouseInput 里的状态。
- * 返回 false 表示该退出主循环了。
+ * 帧转储（开发用）：把当前这一帧的像素存成 BMP。
  *
- * 这里只“更新状态”，不派发事件：命中与投递留给下一帧的 Scene 层，
- * 这样才和设计稿里的 isDirty + query 流程对得上。
+ * 只在设了环境变量 `INK_DUMPFRAME=<路径>` 时触发一次，用来在没有显示器的
+ * 环境（CI、远程会话）确认布局真的画对了；平时一次都不调用。
+ * 形状层与样式层落地后，这段和画布一起换成真正的抓帧工具。
  */
-bool pumpEvents(WindowState& s, MouseInput& mouse) {
+void dumpFrame(SDL_Renderer* renderer, const char* path) {
+    SDL_Surface* surface = SDL_RenderReadPixels(renderer, nullptr);
+    if (surface == nullptr) {
+        INK_LOG_WARN(kModuleName, std::string("帧转储失败：") + SDL_GetError());
+        return;
+    }
+    if (SDL_SaveBMP(surface, path)) {
+        INK_LOG_INFO(kModuleName, std::string("帧已转储：") + path);
+    } else {
+        INK_LOG_WARN(kModuleName, std::string("帧转储写盘失败：") + SDL_GetError());
+    }
+    SDL_DestroySurface(surface);
+}
+
+/**
+ * 事件泵：把这一帧攒下的 SDL 事件吃干净，变成 MouseInput 里的状态，
+ * 顺便把点击投给场景。返回 false 表示该退出主循环了。
+ *
+ * 移动只「记状态 + 标脏」，不在这里判命中——命中与投递留给每帧一次的
+ * isDirty + query（docs/InputDesign.md §5）。
+ */
+bool pumpEvents(WindowState& s, MouseInput& mouse, InputRouter& router) {
     bool running = true;
     SDL_Event event{};
 
@@ -111,21 +155,29 @@ bool pumpEvents(WindowState& s, MouseInput& mouse) {
                 break;
 
             case SDL_EVENT_MOUSE_MOTION:
-            case SDL_EVENT_MOUSE_WHEEL:
                 mouse.UpdateFromSDL(event);
+                router.MarkMouseMoved();  // 鼠标移动 → makeDirty
                 break;
 
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            case SDL_EVENT_MOUSE_BUTTON_UP:
+            case SDL_EVENT_MOUSE_BUTTON_UP: {
                 mouse.UpdateFromSDL(event);
-                // 只记按下与抬起，移动不记——否则 Log.html 会被鼠标刷屏。
+                float x = 0.0f;
+                float y = 0.0f;
+                toDesign(s.renderer, event.button.x, event.button.y, x, y);
+                // 点击不走脏标记，单独查一次。
+                if (event.button.down) {
+                    router.PointerDown(x, y, toButton(event.button.button));
+                } else {
+                    router.PointerUp(x, y, toButton(event.button.button));
+                }
                 INK_LOG_DEBUG(kModuleName,
                               std::string("鼠标") + (event.button.down ? "按下 " : "抬起 ")
                                   + std::to_string(static_cast<int>(event.button.button))
-                                  + " @窗口 ("
-                                  + std::to_string(static_cast<int>(event.button.x)) + ", "
-                                  + std::to_string(static_cast<int>(event.button.y)) + ")");
+                                  + " @设计 (" + std::to_string(static_cast<int>(x)) + ", "
+                                  + std::to_string(static_cast<int>(y)) + ")");
                 break;
+            }
 
             default:
                 break;
@@ -133,77 +185,101 @@ bool pumpEvents(WindowState& s, MouseInput& mouse) {
     }
 
     // 设计坐标一帧只换算一次：一帧里收到多少个移动事件都只算一次，
-    // 和“每帧只判断一次”同拍。
+    // 和「每帧只判断一次」同拍。
     const MousePosition& windowPoint = mouse.GetState().position;
     float designX = 0.0f;
     float designY = 0.0f;
     toDesign(s.renderer, static_cast<float>(windowPoint.x),
              static_cast<float>(windowPoint.y), designX, designY);
     mouse.SetDesignPosition(designX, designY);
+    if (mouse.IsMoved()) {
+        router.MarkMouseMoved();
+    }
 
     return running;
 }
 
 /**
- * 占位绘制：底色 + 跟着指针走的小方块。
+ * 主循环：事件泵 → 设计坐标换算 → 输入（isDirty → query）→ 每帧更新 →
+ * 重绘（独立的一路）→ 帧末收尾 → 节流。
  *
- * 这是临时脚手架，作用只有一个——肉眼确认「窗口坐标 → 设计坐标」换算对不对：
- * 拉成别的窗口比例，方块也应该准确贴在指针上。
- * Canvas / 场景绘制落地后，这个函数整段删掉。
+ * 三件事各自独立，正好是这次原型要验的：
+ *   · 静态层：表在 Bake() 里烘一次，之后每帧只查表、只走平铺绘制表；
+ *   · 输入：isDirty 时每帧一次 query，干净时 0 次（帧计数尾巴收尾）；
+ *   · 重绘：需要重绘的属性调 makeDirty()，静止时整帧不画也不 present。
  */
-void drawPlaceholder(SDL_Renderer* renderer, const MouseInput& mouse) {
-    if (renderer == nullptr) {
-        return;
+void runLoop(WindowState& s, MouseInput& mouse, InkingScene& rootScene) {
+    SdlCanvas canvas(s.renderer);
+
+    InputRouter router;
+    router.Attach(rootScene);
+
+    // 静态场景先烘一遍：之后每帧只查表，不再遍历树。
+    if (rootScene.NeedsBake()) {
+        rootScene.Bake();
     }
 
-    SDL_SetRenderDrawColor(renderer, kBackgroundRed, kBackgroundGreen,
-                           kBackgroundBlue, 255);
-    SDL_RenderClear(renderer);
-
-    const MousePoint& point = mouse.GetState().design;
-    constexpr float kCursorSize = 16.0f;
-    const SDL_FRect cursor{point.x - kCursorSize * 0.5f,
-                           point.y - kCursorSize * 0.5f,
-                           kCursorSize, kCursorSize};
-    SDL_SetRenderDrawColor(renderer, 86, 156, 214, 255);
-    SDL_RenderFillRect(renderer, &cursor);
-
-    SDL_RenderPresent(renderer);
-}
-
-/**
- * 主循环：事件泵 → 鼠标换算 → 每帧更新 → 绘制 → 帧末收尾 → 节流。
- *
- * 骨架期还没有场景，所以“每帧更新”和“绘制”都是占位的；等 Scene / Canvas
- * 落地，替换的只是这两段，循环骨架不用动。
- */
-void runLoop(WindowState& s, MouseInput& mouse) {
     const bool autoQuit = SDL_getenv("INK_AUTOQUIT") != nullptr;
+    const char* dumpPath = SDL_getenv("INK_DUMPFRAME");
+    bool dumped = false;
     const auto start = std::chrono::steady_clock::now();
+    auto previous = start;
     bool running = true;
 
     while (running) {
-        // 1. 事件泵：退出、键盘、鼠标都在这里变成状态。
-        running = pumpEvents(s, mouse);
+        // 1. 事件泵：退出、键盘、鼠标都在这里变成状态（点击顺手投出去）。
+        running = pumpEvents(s, mouse, router);
 
-        // 2. 每帧更新（占位）：Scene 落地后这里做 isDirty → query。
-        //    现在唯一的输入源就是鼠标移动，标脏语义等 Scene 接上再补。
+        // 2. 静态表被改过就重烘：一帧最多付一次。
+        if (rootScene.NeedsBake()) {
+            rootScene.Bake();
+        }
 
-        // 3. 绘制（占位）。
-        drawPlaceholder(s.renderer, mouse);
+        // 3. 输入：脏就 query 一次（hover），帧计数收尾。
+        const MousePoint& point = mouse.GetState().design;
+        router.BeginFrame(point.x, point.y);
 
-        // 4. 帧末收尾：瞬时状态一帧只清一次。放在这里而不是事件循环里，
-        //    否则一帧里的多个移动事件会被后一个清掉。
+        // 4. 每帧更新：静态子树收不到，只有动态子树被叫醒。
+        const auto now = std::chrono::steady_clock::now();
+        const float deltaSeconds = std::chrono::duration<float>(now - previous).count();
+        previous = now;
+        rootScene.Tick(deltaSeconds);
+
+        // 5. 重绘：独立的一路，静止时整帧不画。
+        if (RedrawScheduler::BeginFrame()) {
+            canvas.clear(kBackground);
+            rootScene.Draw(canvas);
+            if (dumpPath != nullptr && !dumped) {
+                // 转储要在 present 之前：present 之后后台缓冲的内容就不保证还在了。
+                dumped = true;  // 只抓第一帧真实画出来的画面
+                dumpFrame(s.renderer, dumpPath);
+            }
+            canvas.present();
+        }
+        RedrawScheduler::EndFrame();
+
+        // 6. 帧末收尾：瞬时状态一帧只清一次。
         mouse.ResetFrameFlags();
 
-        // 5. 节流。
+        flushMessages();
+
+        // 7. 节流。
         std::this_thread::sleep_for(kFrameInterval);
 
         if (autoQuit
-            && std::chrono::steady_clock::now() - start > kAutoQuitAfter) {
+            && std::chrono::duration_cast<std::chrono::milliseconds>(now - start)
+                   > kAutoQuitAfter) {
             running = false;
         }
     }
+
+    INK_LOG_INFO(kModuleName,
+                 "主循环退出。静态表重烘 " + std::to_string(rootScene.BakeCount())
+                     + " 次；hover query " + std::to_string(router.HoverQueries())
+                     + " 次、点击 query " + std::to_string(router.ClickQueries())
+                     + " 次、干净帧 " + std::to_string(router.IdleFrames())
+                     + " 次；重绘 " + std::to_string(RedrawScheduler::PaintedFrames())
+                     + " 帧、跳过 " + std::to_string(RedrawScheduler::SkippedFrames()) + " 帧");
 }
 
 }  // namespace
@@ -270,24 +346,19 @@ void InkingWindow::Show(const std::string& sceneName) {
     WindowState& s = state();
 
     if (s.open) {
-        // 主循环跑起来之后，只有场景回调里再调 Show() 会走到这条分支——
-        // 那正是运行期换场景的用法，所以这里是“切场景”而不是“忽略重复调用”。
-        s.sceneName = sceneName;
-        INK_LOG_INFO(kModuleName, "窗口已经打开，切换场景：" + sceneName);
+        // Show() 会一直阻塞到窗口关闭，所以「已经打开」只能是重复调用。
+        INK_LOG_WARN(kModuleName, "窗口已经打开，忽略这次 Show：" + sceneName);
         return;
     }
 
-    // SDL3 的 SDL_Init 返回 bool：true 才是成功（SDL2 是"0 表示成功"）
+    // SDL3 的 SDL_Init 返回 bool：true 才是成功（SDL2 是「0 表示成功」）
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         INK_LOG_ERROR(kModuleName, std::string("SDL_Init 失败：") + SDL_GetError());
         return;
     }
 
-    s.window = SDL_CreateWindow(
-        "InkingWindow",
-        _width,
-        _height,
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    s.window = SDL_CreateWindow("InkingWindow", _width, _height,
+                                SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!s.window) {
         INK_LOG_ERROR(kModuleName,
                       std::string("SDL_CreateWindow 失败：") + SDL_GetError());
@@ -308,28 +379,34 @@ void InkingWindow::Show(const std::string& sceneName) {
     // 设计尺寸只在这里用一次：它定义的是逻辑坐标系，
     // letterbox 保证任何窗口比例下 UI 都不变形，多余空间留黑边。
     SDL_SetRenderLogicalPresentation(
-        s.renderer,
-        inking::kDesignWidth,
-        inking::kDesignHeight,
+        s.renderer, inking::kDesignWidth, inking::kDesignHeight,
         SDL_LOGICAL_PRESENTATION_LETTERBOX);
 
     s.open = true;
     s.sceneName = sceneName;
 
+    // 没给名字就用最后登记的那个场景——单页程序不必自己记场景名。
+    InkingScene* rootScene =
+        sceneName.empty() ? SceneRegistry::Latest() : SceneRegistry::Find(sceneName);
+    if (rootScene == nullptr) {
+        INK_LOG_ERROR(kModuleName, "场景库里找不到场景：" + sceneName);
+        releaseWindow(s);
+        return;
+    }
+
     INK_LOG_PASS(kModuleName,
                  "窗口已打开 " + std::to_string(_width) + "x" + std::to_string(_height)
                      + "，设计尺寸 " + std::to_string(inking::kDesignWidth) + "x"
                      + std::to_string(inking::kDesignHeight)
-                     + "，场景：" + sceneName);
+                     + "，根场景：" + rootScene->GetName()
+                     + (rootScene->IsDynamic() ? "（动态）" : "（静态）"));
 
     // Show() 是启动点：窗口开出来之后就在这里进主循环，一直阻塞到窗口关闭
-    // （或按 ESC），返回前把窗口释放掉。谁想让主循环跑在别的线程上，
-    // 以后再加一个不阻塞的入口，别把 Show() 拆成两种语义。
-    runLoop(s, _mouseInput);
+    // （或按 ESC），返回前把窗口释放掉。
+    runLoop(s, _mouseInput, *rootScene);
 
-    INK_LOG_INFO(kModuleName, "主循环退出，释放窗口");
+    INK_LOG_INFO(kModuleName, "主循环退出，释放窗口：" + rootScene->GetName());
     releaseWindow(s);
 }
 
 }  // namespace ink
-
