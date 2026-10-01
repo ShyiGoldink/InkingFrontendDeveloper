@@ -62,10 +62,18 @@
 - 已有：事件泵与鼠标输入接入——`InkingWindow::Show()` 里就是主循环
   （事件泵 → 鼠标状态 → 窗口坐标换算设计坐标 → 占位绘制 → 帧末清理），
   鼠标状态在 `include/input/MouseInput.h`；
-- 未实现：Scene 层（`include/scene`、`src/scene` 还是空文件）、
-  SDF 形状层、样式/渲染层、描述文件 + 代码生成器；
-  绘制目前只有占位（`src/window/InkingWindow.cpp` 的 `drawPlaceholder`：
-  清屏 + 一个跟着鼠标的小方块，用来肉眼验证坐标换算），Canvas/场景绘制接手后删掉。
+- 已有：场景层的**登记底座**——`include/scene/SceneLibrary.h`（场景库，对照后端
+  ShineStatusChecker）、`include/scene/SceneRegisterToken.h`（RAII 登记令牌，
+  对照后端 StatusRegisterToken，模板化为 `ink::RegisterToken<Registered, Library>`）、
+  `include/scene/InkingScene.h`（场景基类，构造即登记、析构即注销，令牌放在
+  `std::optional` 成员里）。登记表用函数内静态量（避开静态初始化 / 析构顺序
+  问题），且**有意不加锁**：场景只在 UI 线程构造与析构；
+- 未实现：场景的**可见性写入口 SetVisible 与 onVisibleChanged 钩子**、
+  场景与 widget 的树、SDF 形状层、样式/渲染层、描述文件 + 代码生成器；
+  CXXCSS/Scene 配置读取仍是占位（`src/scene/InkingScene.cpp` 的
+  `sceneRootAnchorData()` 先按设计画布定型）；绘制目前只有占位
+  （`src/window/InkingWindow.cpp` 的 `drawPlaceholder`：清屏 + 一个跟着鼠标的
+  小方块，用来肉眼验证坐标换算），Canvas/场景绘制接手后删掉。
 
 ## 6. 已知坑（真实踩过的）
 
@@ -109,3 +117,26 @@
     `build/<预设>/_deps/`，重配置只要 1 秒左右且不联网（已实测）。
     换 SDL3 版本或换来源，改 `INK_SDL3_SOURCE` / `INK_SDL3_GIT_TAG` 后
     重新配置就行；只有 `--fresh` 或删构建目录才会真的重新联网。
+12. **注册表别用类的静态数据成员，用函数内静态量**：类的静态数据成员在
+    main 之前按翻译单元顺序初始化，而静态场景对象可能先构造——轻则
+    「场景活了库还没起来」，重则「场景在库已经析构之后才注销」。
+    `SceneLibrary` 的 `scenes()` 是函数内静态量，首次使用才初始化，
+    谁先登记就把库先拉起来，库一定活得比登记者久。照抄后端
+    `ShineStatusChecker` 的静态成员写法会带进这个坑。
+13. **`std::optional<RegisterToken>` 当成员不会因「类型不完整」报错**：
+    `RegisterToken<InkingScene, SceneLibrary>` 的模板实参在类体内还是
+    不完整类型，靠的是「类模板的成员函数体延迟实例化」——只要不在类体里
+    定义成员函数或静态成员，就合法。想调 `RegisterToken` 的方法（例如
+    `IsRegistered()`）必须挪到 `.cpp` 里定义。
+14. **include 写「相对 include/ 根」的路径，别自己加前缀**：现有两种前缀并存
+    （`<ink/basic/InkingAnchor.h>` 对 `<scene/...>` 只写一段），因为
+    `include/` 本身就是搜索根，前缀写到与真实目录一致就行，多写一段就找不到。
+    `include/scene/InkingScene.h` 曾经写成 `"ink/scene/SceneLibrary.h"`——
+    文件实际在 `include/scene/` 下，于是成了永远编译不过的死文件；又因为它
+    不在任何 target 的源文件列表里、没人 include，构建照样全绿，问题藏了很久。
+    **新增公开头后，至少让它被某个 .cpp 或自检 include 一次**，别只靠
+    「构建绿」当验证。
+15. **空转的令牌也算「有令牌」**：`RegisterToken` 在名字为空或对象为空时
+    不登记，但对象仍然构造出来了。所以 `InkingScene::IsRegistered()` 不能
+    只判 `_sceneRegisterToken.has_value()`，得同时问令牌自己——这个 bug
+    被自检第 8 段抓到过（空名字的场景自称已登记）。

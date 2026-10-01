@@ -136,10 +136,10 @@ void InkingAnchor::MarkDirty() noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// [final] 写入口
+// [final] 写入口：几何变化（只有动态组件有）
 // ---------------------------------------------------------------------------
 
-bool InkingAnchor::Resize(int width, int height) noexcept {
+bool InkingDynamicAnchor::Resize(int width, int height) noexcept {
     const bool changeWidth =
         (width != InkingResize::none) && (width >= 0) && (width != _width);
     const bool changeHeight =
@@ -160,7 +160,7 @@ bool InkingAnchor::Resize(int width, int height) noexcept {
     return true;
 }
 
-bool InkingAnchor::ChangeSelfAnchor(const Anchor& anchor) noexcept {
+bool InkingDynamicAnchor::ChangeSelfAnchor(const Anchor& anchor) noexcept {
     if (_selfAnchor.x == anchor.x && _selfAnchor.y == anchor.y) {
         return false;
     }
@@ -170,7 +170,7 @@ bool InkingAnchor::ChangeSelfAnchor(const Anchor& anchor) noexcept {
     return true;
 }
 
-bool InkingAnchor::ChangeTraceAnchor(const Anchor& anchor) noexcept {
+bool InkingDynamicAnchor::ChangeTraceAnchor(const Anchor& anchor) noexcept {
     if (_traceAnchor.x == anchor.x && _traceAnchor.y == anchor.y) {
         return false;
     }
@@ -180,7 +180,7 @@ bool InkingAnchor::ChangeTraceAnchor(const Anchor& anchor) noexcept {
     return true;
 }
 
-bool InkingAnchor::ChangeOffset(float offsetX, float offsetY) noexcept {
+bool InkingDynamicAnchor::ChangeOffset(float offsetX, float offsetY) noexcept {
     if (_offsetX == offsetX && _offsetY == offsetY) {
         return false;
     }
@@ -190,6 +190,10 @@ bool InkingAnchor::ChangeOffset(float offsetX, float offsetY) noexcept {
     onOffsetChanged();
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// [final] 写入口：结构性变化（两版共用）
+// ---------------------------------------------------------------------------
 
 bool InkingAnchor::ChangeZIndex(int zIndex) noexcept {
     if (_zIndex == zIndex) {
@@ -233,5 +237,27 @@ void InkingAnchor::onOffsetChanged() {}
 void InkingAnchor::onZIndexChanged(int /*zIndex*/) {}
 void InkingAnchor::onParentChanged(InkingAnchor* /*parent*/) {}
 void InkingAnchor::onDirty() {}
+
+// ---------------------------------------------------------------------------
+// 两种锚点：只是把基类的契约收紧/放开，本身没有额外状态
+// ---------------------------------------------------------------------------
+
+InkingStaticAnchor::InkingStaticAnchor(InkingAnchor* parent,
+                                       const AnchorData& data)
+    : InkingAnchor(parent, data) {}
+
+InkingStaticAnchor::InkingStaticAnchor(InkingAnchor* parent,
+                                       const std::string& name)
+    : InkingAnchor(parent, name) {}
+
+InkingDynamicAnchor::InkingDynamicAnchor(InkingAnchor* parent,
+                                         const AnchorData& data)
+    : InkingAnchor(parent, data) {}
+
+InkingDynamicAnchor::InkingDynamicAnchor(InkingAnchor* parent,
+                                         const std::string& name)
+    : InkingAnchor(parent, name) {}
+
+void InkingDynamicAnchor::onTick(float /*deltaSeconds*/) {}
 
 }  // namespace ink

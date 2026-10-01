@@ -28,6 +28,37 @@ constexpr Uint8 kBackgroundRed   = 18;
 constexpr Uint8 kBackgroundGreen = 18;
 constexpr Uint8 kBackgroundBlue  = 24;
 
+/// 根锚点的尺寸 = 设计画布，不是窗口像素：子组件的锚点是相对设计空间算的。
+AnchorData rootAnchorData() {
+    AnchorData data;
+    data.width  = inking::kDesignWidth;
+    data.height = inking::kDesignHeight;
+    return data;
+}
+
+/**
+ * 设计单位 → 设备像素的倍率。
+ *
+ * letterbox 是整幅等比缩放，所以取两轴里小的那个，多出来的空间就是黑边。
+ * 它只影响绘制换算，不标脏（docs/API.md「标脏」）；窗口层是唯一来源，
+ * 组件不自己倒推。
+ */
+float letterboxMagnification(SDL_Window* window) {
+    int pixelWidth = 0;
+    int pixelHeight = 0;
+    if (window == nullptr
+        || !SDL_GetWindowSizeInPixels(window, &pixelWidth, &pixelHeight)
+        || pixelWidth <= 0 || pixelHeight <= 0) {
+        return 1.0f;
+    }
+
+    const float scaleX = static_cast<float>(pixelWidth)
+                       / static_cast<float>(inking::kDesignWidth);
+    const float scaleY = static_cast<float>(pixelHeight)
+                       / static_cast<float>(inking::kDesignHeight);
+    return scaleX < scaleY ? scaleX : scaleY;
+}
+
 /**
  * 窗口的运行期状态。
  *
@@ -74,6 +105,15 @@ void releaseWindow(WindowState& s) {
  * letterbox 之下这是两套坐标：SDL 给的是窗口像素，场景认的是设计空间
  * （kDesignWidth × kDesignHeight）。换算是渲染器的职责，所以只在这里做一次，
  * 交给场景层的永远是设计坐标。
+ *
+ * 必须走渲染器换算，不能拿展示倍率乘除：letterbox 下设计画面只占窗口中间一块，
+ * 上下（或左右）还有黑边，换算里有偏移。实测 1000×1200 的窗口配 1920×1080 的
+ * 设计——等比倍率 0.5208、上下黑边各 318.8：
+ *   正中 (500,600)：SDL 给 (960,540)，除以倍率会算成 (960,1152)；
+ *   (500,0) 在黑边里：SDL 给负的 y（正确地判为空白），除以倍率会算成 y=0，在顶边误命中。
+ *
+ * 这条同时说明：**整体缩放不需要重烘命中表**——表建在设计坐标里，缩放只写
+ * Magnification（不标脏），鼠标坐标每帧换算回设计空间再查表。
  */
 void toDesign(SDL_Renderer* renderer, float windowX, float windowY,
               float& designX, float& designY) {
@@ -145,6 +185,27 @@ bool pumpEvents(WindowState& s, MouseInput& mouse) {
 }
 
 /**
+ * 每帧把展示倍率刷成当前值。
+ *
+ * 不靠事件驱动：全屏切换、移动到不同 DPI 的显示器、系统缩放变化……SDL 发的事件
+ * 并不统一（实测进全屏会发 PIXEL_SIZE_CHANGED **和** DISPLAY_SCALE_CHANGED，
+ * 后者我们没接）。反正只是两次除法，每帧从当前像素尺寸重算最省心，也永远不会
+ * 落后一帧。值没变就什么都不做。
+ *
+ * 设计坐标里的几何一点没动——这正是"场景不做布局变化"和"整体缩放不用重烘表"
+ * 能成立的原因。
+ */
+void syncMagnification(WindowState& s, InkingWindow& window) {
+    const float magnification = letterboxMagnification(s.window);
+    const float previous = window.GetMagnification();
+    if (magnification > previous - 1e-6f && magnification < previous + 1e-6f) {
+        return;
+    }
+    window.SetMagnification(magnification);
+    INK_LOG_DEBUG(kModuleName, "展示倍率=" + std::to_string(magnification));
+}
+
+/**
  * 占位绘制：底色 + 跟着指针走的小方块。
  *
  * 这是临时脚手架，作用只有一个——肉眼确认「窗口坐标 → 设计坐标」换算对不对：
@@ -177,7 +238,7 @@ void drawPlaceholder(SDL_Renderer* renderer, const MouseInput& mouse) {
  * 骨架期还没有场景，所以“每帧更新”和“绘制”都是占位的；等 Scene / Canvas
  * 落地，替换的只是这两段，循环骨架不用动。
  */
-void runLoop(WindowState& s, MouseInput& mouse) {
+void runLoop(WindowState& s, MouseInput& mouse, InkingWindow& window) {
     const bool autoQuit = SDL_getenv("INK_AUTOQUIT") != nullptr;
     const auto start = std::chrono::steady_clock::now();
     bool running = true;
@@ -186,8 +247,9 @@ void runLoop(WindowState& s, MouseInput& mouse) {
         // 1. 事件泵：退出、键盘、鼠标都在这里变成状态。
         running = pumpEvents(s, mouse);
 
-        // 2. 每帧更新（占位）：Scene 落地后这里做 isDirty → query。
-        //    现在唯一的输入源就是鼠标移动，标脏语义等 Scene 接上再补。
+        // 2. 每帧更新：展示倍率跟着窗口/DPI 走；Scene 落地后这里还要做
+        //    isDirty → query，现在唯一的输入源就是鼠标移动。
+        syncMagnification(s, window);
 
         // 3. 绘制（占位）。
         drawPlaceholder(s.renderer, mouse);
@@ -208,7 +270,7 @@ void runLoop(WindowState& s, MouseInput& mouse) {
 
 }  // namespace
 
-InkingWindow::InkingWindow() = default;
+InkingWindow::InkingWindow() : InkingStaticAnchor(nullptr, rootAnchorData()) {}
 
 InkingWindow::~InkingWindow() {
     WindowState& s = state();
@@ -223,46 +285,48 @@ InkingWindow& InkingWindow::Instance() {
     return instance;
 }
 
-int InkingWindow::GetWidth() const noexcept {
-    return _width;
+int InkingWindow::GetWindowWidth() const noexcept {
+    return _windowWidth;
 }
 
-int InkingWindow::GetHeight() const noexcept {
-    return _height;
+int InkingWindow::GetWindowHeight() const noexcept {
+    return _windowHeight;
 }
 
-bool InkingWindow::setWidth(int width) {
+bool InkingWindow::setWindowWidth(int width) {
     if (width <= 0) {
         INK_LOG_ERROR(kModuleName, "宽度必须为正数：" + std::to_string(width));
         return false;
     }
 
-    _width = width;
+    _windowWidth = width;
 
     // 窗口已经开出来时立刻跟随；还没开就只是记下来，等 Show() 时用
     WindowState& s = state();
     if (s.window) {
-        SDL_SetWindowSize(s.window, _width, _height);
+        SDL_SetWindowSize(s.window, _windowWidth, _windowHeight);
+        // 展示倍率不用在这里算：主循环每帧都会刷一次（见 syncMagnification）。
     }
 
-    INK_LOG_DEBUG(kModuleName, "窗口宽度=" + std::to_string(_width));
+    INK_LOG_DEBUG(kModuleName, "窗口宽度=" + std::to_string(_windowWidth));
     return true;
 }
 
-bool InkingWindow::setHeight(int height) {
+bool InkingWindow::setWindowHeight(int height) {
     if (height <= 0) {
         INK_LOG_ERROR(kModuleName, "高度必须为正数：" + std::to_string(height));
         return false;
     }
 
-    _height = height;
+    _windowHeight = height;
 
     WindowState& s = state();
     if (s.window) {
-        SDL_SetWindowSize(s.window, _width, _height);
+        SDL_SetWindowSize(s.window, _windowWidth, _windowHeight);
+        // 同上：倍率由主循环每帧刷新。
     }
 
-    INK_LOG_DEBUG(kModuleName, "窗口高度=" + std::to_string(_height));
+    INK_LOG_DEBUG(kModuleName, "窗口高度=" + std::to_string(_windowHeight));
     return true;
 }
 
@@ -285,8 +349,8 @@ void InkingWindow::Show(const std::string& sceneName) {
 
     s.window = SDL_CreateWindow(
         "InkingWindow",
-        _width,
-        _height,
+        _windowWidth,
+        _windowHeight,
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!s.window) {
         INK_LOG_ERROR(kModuleName,
@@ -313,19 +377,24 @@ void InkingWindow::Show(const std::string& sceneName) {
         inking::kDesignHeight,
         SDL_LOGICAL_PRESENTATION_LETTERBOX);
 
+    // 展示倍率：设计单位 → 设备像素。窗口层写一次，之后跟着窗口尺寸事件走。
+    SetMagnification(letterboxMagnification(s.window));
+
     s.open = true;
     s.sceneName = sceneName;
 
     INK_LOG_PASS(kModuleName,
-                 "窗口已打开 " + std::to_string(_width) + "x" + std::to_string(_height)
+                 "窗口已打开 " + std::to_string(_windowWidth) + "x"
+                     + std::to_string(_windowHeight)
                      + "，设计尺寸 " + std::to_string(inking::kDesignWidth) + "x"
                      + std::to_string(inking::kDesignHeight)
+                     + "，展示倍率 " + std::to_string(GetMagnification())
                      + "，场景：" + sceneName);
 
     // Show() 是启动点：窗口开出来之后就在这里进主循环，一直阻塞到窗口关闭
     // （或按 ESC），返回前把窗口释放掉。谁想让主循环跑在别的线程上，
     // 以后再加一个不阻塞的入口，别把 Show() 拆成两种语义。
-    runLoop(s, _mouseInput);
+    runLoop(s, _mouseInput, *this);
 
     INK_LOG_INFO(kModuleName, "主循环退出，释放窗口");
     releaseWindow(s);

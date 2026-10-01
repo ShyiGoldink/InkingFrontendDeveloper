@@ -65,6 +65,8 @@ set(INK_CORE_SOURCES
     src/ink/thread/ThreadPool.cpp
     src/ink/thread/TaskQueue.cpp
     src/input/MouseInput.cpp
+    src/scene/InkingScene.cpp
+    src/scene/SceneLibrary.cpp
     src/window/InkingWindow.cpp)
 
 # 日志实现只在 ISLOG 打开时才参与编译；

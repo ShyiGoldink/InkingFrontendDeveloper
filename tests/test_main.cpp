@@ -4,10 +4,12 @@
 #include <ink/ink.h>
 #include <ink/basic/InkingAnchor.h>
 #include <input/MouseInput.h>
+#include <scene/InkingScene.h>
 #include <window/InkingWindow.h>
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
 #include <any>
 #include <chrono>
 #include <cstdio>
@@ -41,11 +43,11 @@ bool waitFor(Predicate predicate, int timeoutMilliseconds) {
     return predicate();
 }
 
-/// 验证写入口只在真的改动时才触发钩子。
-class CountingAnchor : public ink::InkingAnchor {
+/// 验证写入口只在真的改动时才触发钩子（几何写入口只有动态版有）。
+class CountingAnchor : public ink::InkingDynamicAnchor {
 public:
     CountingAnchor(ink::InkingAnchor* parent, const ink::AnchorData& data)
-        : ink::InkingAnchor(parent, data) {}
+        : ink::InkingDynamicAnchor(parent, data) {}
 
     int sizeChanges = 0;
 
@@ -128,12 +130,14 @@ int main() {
     // 5. 窗口：设计尺寸是编译期常量，窗口尺寸是运行期属性
     // ---------------------------------------------------------------------
     ink::InkingWindow& window = ink::InkingWindow::Instance();
-    check(window.GetWidth() == inking::kDesignWidth, "窗口宽度默认等于设计宽度");
-    check(window.GetHeight() == inking::kDesignHeight, "窗口高度默认等于设计高度");
-    check(!window.setWidth(0), "非法宽度被拒绝");
-    check(!window.setHeight(-1), "非法高度被拒绝");
-    check(window.setWidth(1280) && window.GetWidth() == 1280, "setWidth 生效");
-    check(window.setHeight(720) && window.GetHeight() == 720, "setHeight 生效");
+    check(window.GetWindowWidth() == inking::kDesignWidth, "窗口宽度默认等于设计宽度");
+    check(window.GetWindowHeight() == inking::kDesignHeight, "窗口高度默认等于设计高度");
+    check(!window.setWindowWidth(0), "非法宽度被拒绝");
+    check(!window.setWindowHeight(-1), "非法高度被拒绝");
+    check(window.setWindowWidth(1280) && window.GetWindowWidth() == 1280,
+          "setWindowWidth 生效");
+    check(window.setWindowHeight(720) && window.GetWindowHeight() == 720,
+          "setWindowHeight 生效");
 
     // ---------------------------------------------------------------------
     // 6. 鼠标输入：状态更新、帧末收尾、设计坐标
@@ -186,14 +190,14 @@ int main() {
         ink::AnchorData boxData;
         boxData.width = 200;
         boxData.height = 100;
-        ink::InkingAnchor box(nullptr, boxData);
+        ink::InkingStaticAnchor box(nullptr, boxData);
 
         ink::AnchorData itemData;
         itemData.width = 40;
         itemData.height = 20;
         itemData.selfAnchor = ink::InkingChangeAnchor::Center;
         itemData.traceAnchor = ink::InkingChangeAnchor::Center;
-        ink::InkingAnchor item(&box, itemData);
+        ink::InkingDynamicAnchor item(&box, itemData);
 
         // 双 Center：自身矩形落在 (80,40)-(120,60)
         check(item.GetX() == 80.0f && item.GetY() == 40.0f,
@@ -205,11 +209,11 @@ int main() {
         ink::AnchorData grandData;
         grandData.width = 400;
         grandData.height = 200;
-        ink::InkingAnchor grand(nullptr, grandData);
-        ink::InkingAnchor mid(&grand, boxData);
+        ink::InkingStaticAnchor grand(nullptr, grandData);
+        ink::InkingDynamicAnchor mid(&grand, boxData);
         mid.ChangeSelfAnchor(ink::InkingChangeAnchor::Center);
         mid.ChangeTraceAnchor(ink::InkingChangeAnchor::Center);
-        ink::InkingAnchor deep(&mid, itemData);
+        ink::InkingStaticAnchor deep(&mid, itemData);
         check(mid.GetAbsX() == 100.0f && mid.GetAbsY() == 50.0f,
               "父级居中于祖父");
         check(deep.GetAbsX() == 180.0f && deep.GetAbsY() == 90.0f,
@@ -237,8 +241,8 @@ int main() {
         check(!item.Resize(ink::InkingResize::none, 30), "尺寸没变就不算改动");
 
         // 层级：同场景内全局比 zindex，z 相同时晚注册的在上
-        ink::InkingAnchor lower(&box, itemData);
-        ink::InkingAnchor upper(&box, itemData);
+        ink::InkingStaticAnchor lower(&box, itemData);
+        ink::InkingStaticAnchor upper(&box, itemData);
         upper.ChangeZIndex(1);
         check(ink::InkingAnchor::IsAbove(upper, lower), "z 大的在上");
         lower.ChangeZIndex(1);
@@ -247,7 +251,7 @@ int main() {
         check(ink::InkingAnchor::IsAbove(lower, upper), "z 相同时晚注册的在上");
 
         // 标脏：写入口真的改了才标
-        ink::InkingAnchor dirtyOne(&box, itemData);
+        ink::InkingDynamicAnchor dirtyOne(&box, itemData);
         dirtyOne.ClearDirty();
         check(!dirtyOne.IsDirty(), "清掉脏标记");
         check(dirtyOne.Resize(50, 25) && dirtyOne.IsDirty(),
@@ -264,13 +268,128 @@ int main() {
               "没改动不触发钩子");
 
         // 展示倍率：影响绘制换算，不影响标脏
-        ink::InkingAnchor scaled(&box, itemData);
+        ink::InkingStaticAnchor scaled(&box, itemData);
         scaled.ClearDirty();
         scaled.SetMagnification(2.0f);
         check(scaled.GetDeviceWidth() == 80.0f
                   && scaled.GetDeviceHeight() == 40.0f,
               "展示倍率换算成设备像素");
         check(!scaled.IsDirty(), "展示倍率不标脏");
+    }
+
+    // ---------------------------------------------------------------------
+    // 8. SceneLibrary + RAII 令牌：构造即登记，析构即注销
+    //
+    // 场景是抽象基类（InkingScene 注释里写明用户要继承它），所以这里按
+    // 真实用法派生出两个最小的测试场景，不往产品代码里加假的测试实现。
+    // ---------------------------------------------------------------------
+    {
+        class TestSceneA : public ink::InkingScene {
+        public:
+            explicit TestSceneA(const std::string& name)
+                : ink::InkingScene(name) {}
+        };
+        class TestSceneB : public ink::InkingScene {
+        public:
+            explicit TestSceneB(const std::string& name)
+                : ink::InkingScene(name) {}
+        };
+
+        // 先拿一份"用之前"的快照，最后拿它对照，别把这一段的断言写成自证。
+        const std::size_t scenesBefore = ink::SceneLibrary::SceneCount();
+        const std::vector<std::string> namesBefore =
+            ink::SceneLibrary::GetAllSceneNames();
+
+        {
+            TestSceneA scene("Scene.One");
+            TestSceneA sameName("Scene.One");
+            TestSceneB other("Scene.Two");
+
+            check(scene.GetSceneName() == "Scene.One", "场景名可读");
+            check(scene.IsRegistered(), "构造即登记（RAII 令牌生效）");
+            check(ink::SceneLibrary::SceneCount() == scenesBefore + 3,
+                  "场景库记下三个场景实例");
+            check(ink::SceneLibrary::GetScenes("Scene.One").size() == 2,
+                  "同一名字下能存多个场景实例");
+            check(ink::SceneLibrary::GetScenes("Scene.Two").size() == 1,
+                  "不同名字互不干扰");
+
+            // 同名同类型也能区分实例：查出来的是各自的地址
+            const std::vector<ink::InkingScene*> found =
+                ink::SceneLibrary::GetScenes("Scene.One");
+            const bool hasBoth =
+                std::find(found.begin(), found.end(),
+                          static_cast<ink::InkingScene*>(&scene)) != found.end()
+                && std::find(found.begin(), found.end(),
+                             static_cast<ink::InkingScene*>(&sameName))
+                       != found.end();
+            check(hasBoth, "查出来的是各自的实例指针");
+
+            // 没有登记过的名字返回空，而不是抛错
+            check(ink::SceneLibrary::GetScenes("Scene.None").empty(),
+                  "没登记过的名字返回空列表");
+
+            const std::vector<std::string> names =
+                ink::SceneLibrary::GetAllSceneNames();
+            check(std::find(names.begin(), names.end(), "Scene.One") != names.end()
+                      && std::find(names.begin(), names.end(), "Scene.Two")
+                             != names.end(),
+                  "全部场景名包含刚登记的两个名字");
+        }
+
+        // 出了作用域：RAII 令牌析构，三个场景应当全部自动注销
+        check(ink::SceneLibrary::SceneCount() == scenesBefore,
+              "析构即注销（离开作用域后场景库回到原状）");
+        check(ink::SceneLibrary::GetScenes("Scene.One").empty(),
+              "空掉的名字被一并移除");
+        check(ink::SceneLibrary::GetScenes("Scene.Two").empty(),
+              "另一个名字同样被移除");
+
+        const std::vector<std::string> namesAfter =
+            ink::SceneLibrary::GetAllSceneNames();
+        const bool noLeftover =
+            std::find(namesAfter.begin(), namesAfter.end(), "Scene.One")
+                == namesAfter.end()
+            && std::find(namesAfter.begin(), namesAfter.end(), "Scene.Two")
+                   == namesAfter.end();
+        check(noLeftover && namesAfter.size() == namesBefore.size(),
+              "场景名列表不残留空壳");
+
+        // 不传名字的运行时构造：不登记，也不该在库里留下空 key
+        {
+            TestSceneA unnamed("");
+            check(!unnamed.IsRegistered(), "空名字的场景不登记");
+            check(ink::SceneLibrary::GetScenes("").empty(), "库里没有空 key");
+            check(ink::SceneLibrary::SceneCount() == scenesBefore,
+                  "不登记的场景不影响计数");
+        }
+
+        // 令牌本身：可移动，搬走登记之后源令牌不再持有它
+        {
+            auto makeToken = [](ink::InkingScene* scene) {
+                ink::InkingScene::SceneToken token("Scene.Moved", scene);
+                return token;  // 移动构造
+            };
+
+            TestSceneA target("Scene.Probe");
+            {
+                ink::InkingScene::SceneToken token =
+                    makeToken(static_cast<ink::InkingScene*>(&target));
+                check(token.IsRegistered() && token.GetName() == "Scene.Moved",
+                      "令牌能移动构造，名字跟着走");
+                check(ink::SceneLibrary::GetScenes("Scene.Moved").size() == 1,
+                      "移动过来的令牌登记在新名字下");
+                check(ink::SceneLibrary::GetScenes("Scene.Probe").size() == 1,
+                      "原场景自己的登记不受令牌搬移影响");
+            }
+            check(ink::SceneLibrary::GetScenes("Scene.Moved").empty(),
+                  "令牌析构后新名字下的登记被清掉");
+            check(ink::SceneLibrary::GetScenes("Scene.Probe").size() == 1,
+                  "原场景的登记仍然在");
+        }
+
+        check(ink::SceneLibrary::SceneCount() == scenesBefore,
+              "这一段跑完，场景库回到用之前的状态");
     }
 
     // ---------------------------------------------------------------------
@@ -284,7 +403,7 @@ int main() {
         window.Show();
         // Show() 返回说明主循环退出了；此时窗口句柄应该已经释放，
         // 再配置一次不会碰到已经销毁的 SDL 对象。
-        check(window.setWidth(1280), "主循环退出后窗口仍可配置（句柄已释放）");
+        check(window.setWindowWidth(1280), "主循环退出后窗口仍可配置（句柄已释放）");
     }
 
     std::printf("失败项：%d\n", gFailed);

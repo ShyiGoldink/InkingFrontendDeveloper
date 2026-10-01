@@ -63,12 +63,6 @@ struct AnchorData {
 
 class InkingAnchor {
 public:
-    /// 根（窗口 / 场景）传 nullptr 当 parent；其余组件都必须有 parent。
-    InkingAnchor(InkingAnchor* parent, const AnchorData& data);
-
-    /// 配置驱动：只给 parent + 名字，怎么读 CXXCSS 交给子类自己实现。
-    InkingAnchor(InkingAnchor* parent, const std::string& name);
-
     /// 虚析构 + 禁拷贝/移动：本类要被继承、持有父指针，之后还要注册进场景与
     /// 命中表，复制出的第二份关系会让父子链和注册表同时指向同一个对象。
     virtual ~InkingAnchor() = default;
@@ -107,17 +101,17 @@ public:
     bool IsDirty() const noexcept;  ///< 上一次改动还没被消费
     void ClearDirty() noexcept;
 
-    // ---------------- [final] 写入口 ----------------
+    // ---------------- [final] 写入口：结构性变化 ----------------
     //
+    // 可见性、层级、父子关系这类"结构性变化"两个版本都有，所以放在基类。
     // 一律不加 virtual：子类不可重写（docs/API.md「[final] 写入口」）。
     // 标脏与钩子都在内部完成，所以不存在"哪次改动忘了标脏"的漏。
     // 返回 bool 表示这次调用是否真的改动了；没变就不标脏、不触发钩子。
+    //
+    // 几何写入口（尺寸 / 自身锚点 / 上级锚点 / 偏移）**不在这里**——那是动态
+    // 组件才有的东西，见 InkingDynamicAnchor。放进基类就等于"表里存的基类
+    // 指针也能改静态组件的几何"，而那正是要避免的事。
 
-    /// 改自身尺寸；某个方向传 InkingResize::none 表示该方向不动，负值忽略。
-    bool Resize(int width, int height) noexcept;
-    bool ChangeSelfAnchor(const Anchor& anchor) noexcept;
-    bool ChangeTraceAnchor(const Anchor& anchor) noexcept;
-    bool ChangeOffset(float offsetX, float offsetY) noexcept;
     bool ChangeZIndex(int zIndex) noexcept;  ///< 层级变化是要标脏的四件事之一
     bool SetParent(InkingAnchor* parent) noexcept;
 
@@ -136,6 +130,13 @@ public:
     void MarkDirty() noexcept;
 
 protected:
+    /// 只给两个派生类调：**本类不可直接实例化**，每个组件声明时必须选一种
+    /// （静态还是动态）。根（窗口 / 场景）传 nullptr 当 parent。
+    InkingAnchor(InkingAnchor* parent, const AnchorData& data);
+
+    /// 配置驱动：只给 parent + 名字，怎么读 CXXCSS 交给子类自己实现。
+    InkingAnchor(InkingAnchor* parent, const std::string& name);
+
     // ---------------- [√] 可重写钩子 ----------------
     //
     // 钩子只挂附加逻辑：不负责标脏（写入口已经标了），也不拦截写入口。
@@ -166,6 +167,58 @@ protected:
     InkingAnchor* _parent = nullptr;  ///< 非拥有关系；窗口 / 场景为空
 
     bool _dirty = true;  ///< 改动还没被消费
+};
+
+// ---------------------------------------------------------------------------
+// 两种锚点：静态组件与动态组件
+//
+// 判据只有一条 —— **几何会不会在构造之后自己变**。基类不可直接实例化，
+// 所以每个组件声明的时候就必须选一种：
+//
+//   静态（InkingStaticAnchor）：构造时定型，之后几何不动 → 进命中表。
+//   动态（InkingDynamicAnchor）：几何会自己变 → 不进表，自己维护命中状态，
+//       每帧收到一次 Tick。
+//
+// 分流不靠运行期标记：谁属于哪一档，在**登记**那一刻就是明确的（静态的登记
+// 进表、动态的登记进动态档），所以查询与合并时不需要再问一次"你是不是动态的"。
+//
+// 两版共用的东西（都在 InkingAnchor 里）：只读查询、层级、父级、展示倍率、
+// 标脏、IsAbove。也就是说"静态"少的**只有几何写入口**——可见性、层级、增删
+// 这些是结构性变化，两个版本都有，那不属于"动态"。
+// ---------------------------------------------------------------------------
+
+/// 静态组件：几何构造即定型。
+///
+/// 它没有几何写入口，基类里也没有——所以就算拿到 InkingAnchor*（命中表里存
+/// 的就是它）也改不了几何。这是类型上的硬保证，不靠约定。
+class InkingStaticAnchor : public InkingAnchor {
+public:
+    InkingStaticAnchor(InkingAnchor* parent, const AnchorData& data);
+    InkingStaticAnchor(InkingAnchor* parent, const std::string& name);
+};
+
+/// 动态组件：几何会自己变，所以不进表、自己维护命中状态。
+class InkingDynamicAnchor : public InkingAnchor {
+public:
+    InkingDynamicAnchor(InkingAnchor* parent, const AnchorData& data);
+    InkingDynamicAnchor(InkingAnchor* parent, const std::string& name);
+
+    // ---------------- [final] 写入口：几何变化 ----------------
+    // 只有动态版有这几个入口。同样不加 virtual，标脏与钩子都在内部完成；
+    // 返回 bool 表示这次是否真的改了，没变就不标脏、不触发钩子。
+
+    /// 改自身尺寸；某个方向传 InkingResize::none 表示该方向不动，负值忽略。
+    bool Resize(int width, int height) noexcept;
+    bool ChangeSelfAnchor(const Anchor& anchor) noexcept;
+    bool ChangeTraceAnchor(const Anchor& anchor) noexcept;
+    bool ChangeOffset(float offsetX, float offsetY) noexcept;
+
+    /// 每帧一次，由场景调。静态组件压根没有这个入口。
+    void Tick(float deltaSeconds) noexcept { onTick(deltaSeconds); }
+
+protected:
+    /// 每帧一次的钩子，动态组件按需重写。
+    virtual void onTick(float deltaSeconds);
 };
 
 }  // namespace ink
