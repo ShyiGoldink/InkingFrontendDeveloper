@@ -1,0 +1,6 @@
+{
+    "$comment": "坏样例：没有 name。名字是文件名、查找键、类名三处的共同来源，不能缺。",
+    "width": 200,
+    "height": 100,
+    "normal": { "type": "color", "source": "0|0|0|1" }
+}

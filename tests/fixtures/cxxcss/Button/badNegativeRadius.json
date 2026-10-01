@@ -1,0 +1,8 @@
+{
+    "$comment": "坏样例：负半径是配置错误（上限夹取是另一回事，下限不夹）。",
+    "name": "badNegativeRadius",
+    "width": 200,
+    "height": 100,
+    "normal": { "type": "color", "source": "0|0|0|1" },
+    "shape": { "type": "roundedRect", "radius": -5 }
+}

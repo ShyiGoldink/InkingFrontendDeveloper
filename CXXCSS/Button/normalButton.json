@@ -1,0 +1,36 @@
+{
+    "$comment": [
+        "一个真实配置：CXXCSS/Button/normalButton.json",
+        "名字必须与文件名一致（生成器会核对），而且要是合法标识符，",
+        "这样生成器才会给你 ink::cxxcss::kNormalButtonName 这个常量。",
+        "※ 以 .example.json 结尾的文件只作参考，不参与生成。",
+        "",
+        "这里是【白色按钮】：通常状态 0.35 透明度（偏透，能看见底下的背景），",
+        "悬停时升到 0.85（明显变实），按下回到 0.35。",
+        "为什么不用示例里那套 0.75 / 0.85 的黑色：两者只差一个色阶，",
+        "合成到深色背景上肉眼分不出来——按钮三态要看得见，差距就得拉开。"
+    ],
+    "name": "normalButton",
+    "width": 200,
+    "height": 100,
+    "normal": {
+        "type": "color",
+        "source": "1|1|1|0.35"
+    },
+    "hover": {
+        "type": "color",
+        "source": "1|1|1|0.85"
+    },
+    "onclicked": {
+        "type": "color",
+        "source": "1|1|1|0.35"
+    },
+    "selfAnchorX": 0.5,
+    "selfAnchorY": 0.5,
+    "traceAnchorX": 0.5,
+    "traceAnchorY": 0.5,
+    "shape": {
+        "type": "roundedRect",
+        "radius": 10
+    }
+}

@@ -1,0 +1,11 @@
+{
+    "$comment": [
+        "重名样例之一：与 dupTwo.json 写同一个 name，但文件名不同。",
+        "生成器必须在生成期拦下——运行期 ButtonLibrary 会驳回后来者，",
+        "那是静默的错（按钮长得不对，却没有任何报错）。"
+    ],
+    "name": "dupName",
+    "width": 80,
+    "height": 40,
+    "normal": { "type": "color", "source": "0|0|0|1" }
+}

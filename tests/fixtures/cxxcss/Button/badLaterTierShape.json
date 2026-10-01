@@ -1,0 +1,8 @@
+{
+    "$comment": "坏样例：capsule 在格式里有定义，但形状层还没实现——报「尚未实现」。",
+    "name": "badLaterTierShape",
+    "width": 200,
+    "height": 100,
+    "normal": { "type": "color", "source": "0|0|0|1" },
+    "shape": { "type": "capsule" }
+}

@@ -1,0 +1,6 @@
+{
+    "$comment": "坏样例：缺 width（尺寸是必填的，没有默认值）。",
+    "name": "badMissingSize",
+    "height": 100,
+    "normal": { "type": "color", "source": "0|0|0|1" }
+}

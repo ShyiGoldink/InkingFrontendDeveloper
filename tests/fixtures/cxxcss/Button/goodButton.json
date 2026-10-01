@@ -1,0 +1,38 @@
+{
+    "$comment": [
+        "合法样例：三态齐全、圆角、有文字。",
+        "名字 goodButton 与文件名一致，而且是合法标识符 → 生成 kGoodButtonName。"
+    ],
+    "name": "goodButton",
+    "width": 200,
+    "height": 100,
+    "normal": {
+        "type": "color",
+        "source": "0|0|0|0.75"
+    },
+    "hover": {
+        "type": "color",
+        "source": "0|0|0|0.85"
+    },
+    "onclicked": {
+        "type": "color",
+        "source": "0|0|0|0.75"
+    },
+    "text": {
+        "fontSize": 16,
+        "leftSpace": 12,
+        "topSpace": 8,
+        "path": "",
+        "content": {
+            "normal": "确定"
+        }
+    },
+    "selfAnchorX": 0.5,
+    "selfAnchorY": 0.5,
+    "traceAnchorX": 0.5,
+    "traceAnchorY": 0.5,
+    "shape": {
+        "type": "roundedRect",
+        "radius": 10
+    }
+}

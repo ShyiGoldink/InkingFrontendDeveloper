@@ -1,0 +1,7 @@
+{
+    "$comment": "重名样例之二：name 与 dupOne.json 相同。",
+    "name": "dupName",
+    "width": 80,
+    "height": 40,
+    "normal": { "type": "color", "source": "1|1|1|1" }
+}

@@ -69,6 +69,10 @@ function(_ink_try_local_sdl3 resultVar)
         message(STATUS "Inking: using local SDL3 (${SDL3_VERSION}) at "
                        "${INK_SDL3_LOCAL_DIR}")
         set(INK_SDL3_TARGET SDL3::SDL3 PARENT_SCOPE)
+        # 把 SDL3Config.cmake 所在的目录记到 cache：SDL3 的伴侣库
+        # （SDL3_image 等）要靠它才能找到 SDL3::Headers。
+        set(INK_SDL3_CONFIG_DIR "${SDL3_DIR}" CACHE INTERNAL
+            "找到 SDL3 的那个 cmake 配置目录，供伴侣库查找用")
         set(${resultVar} TRUE PARENT_SCOPE)
     else()
         set(${resultVar} FALSE PARENT_SCOPE)
@@ -83,6 +87,8 @@ function(_ink_try_system_sdl3 resultVar)
     if(SDL3_FOUND)
         message(STATUS "Inking: using system SDL3 (${SDL3_VERSION})")
         set(INK_SDL3_TARGET SDL3::SDL3 PARENT_SCOPE)
+        set(INK_SDL3_CONFIG_DIR "${SDL3_DIR}" CACHE INTERNAL
+            "找到 SDL3 的那个 cmake 配置目录，供伴侣库查找用")
         set(${resultVar} TRUE PARENT_SCOPE)
     else()
         set(${resultVar} FALSE PARENT_SCOPE)
@@ -107,6 +113,13 @@ function(_ink_fetch_sdl3)
         GIT_SHALLOW TRUE
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
     FetchContent_MakeAvailable(sdl3)
+
+    # 源码构建时 SDL3Config.cmake 由 SDL3 自己的构建步骤生成，位置在构建目录。
+    # 伴侣库（SDL3_image）要对得上，就得靠这个目录找到 SDL3::Headers。
+    if(EXISTS "${sdl3_BINARY_DIR}/SDL3Config.cmake")
+        set(INK_SDL3_CONFIG_DIR "${sdl3_BINARY_DIR}" CACHE INTERNAL
+            "找到 SDL3 的那个 cmake 配置目录，供伴侣库查找用")
+    endif()
 
     set(INK_SDL3_TARGET SDL3::SDL3 PARENT_SCOPE)
     message(STATUS "Inking: SDL3 built from source (${INK_SDL3_GIT_TAG})")

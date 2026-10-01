@@ -1,0 +1,8 @@
+{
+    "$comment": "坏样例：shape.type 不认识（只支持 rect / roundedRect / circle / ellipse）。",
+    "name": "badUnknownShape",
+    "width": 200,
+    "height": 100,
+    "normal": { "type": "color", "source": "0|0|0|1" },
+    "shape": { "type": "blob", "radius": 10 }
+}

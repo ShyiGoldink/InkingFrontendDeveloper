@@ -1,8 +1,9 @@
 #include <scene/SceneLibrary.h>
 
-#include <algorithm>
 #include <unordered_map>
 #include <utility>
+
+#include <SDL3/SDL.h>
 
 #include <scene/InkingScene.h>
 
@@ -10,8 +11,8 @@ namespace ink {
 
 namespace {
 
-/** name → 该名字下的场景实例列表。与后端 _callbackPointers 同构。 */
-using SceneMap = std::unordered_map<std::string, std::vector<InkingScene*>>;
+/** name → 该名字占用的场景。一对一，这是"同名同期只能有一个"的落点。 */
+using SceneMap = std::unordered_map<std::string, InkingScene*>;
 
 /**
  * 唯一的登记表。
@@ -25,23 +26,33 @@ SceneMap& scenes() {
     return instance;
 }
 
+/** 当前活跃（正在渲染）的场景；谁都不活跃时为 nullptr。 */
+InkingScene*& activeScene() {
+    static InkingScene* scene = nullptr;
+    return scene;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
 // 登记 / 注销
 // ---------------------------------------------------------------------------
 
-void SceneLibrary::RegisterScene(const std::string& sceneName,
-                                 InkingScene* scene) {
-    if (scene == nullptr) {
-        return;  // 鲁棒设计：空指针不进库，省得后面每个使用者都要判空
+SceneLibrary::RegisterResult SceneLibrary::RegisterScene(
+    const std::string& sceneName, InkingScene* scene) {
+    if (scene == nullptr || sceneName.empty()) {
+        return RegisterResult::Invalid;
     }
 
-    std::vector<InkingScene*>& bucket = scenes()[sceneName];
-    // 先查重：同一个指针登记两次只算一次，避免注销时留一份野指针。
-    if (std::find(bucket.begin(), bucket.end(), scene) == bucket.end()) {
-        bucket.push_back(scene);
+    SceneMap& table = scenes();
+    if (table.find(sceneName) != table.end()) {
+        // 名字被占了就驳回：不覆盖、不排队。
+        // 后来者照样构造出来了，但它没进库，所以永远不会被播放。
+        return RegisterResult::NameTaken;
     }
+
+    table.emplace(sceneName, scene);
+    return RegisterResult::Ok;
 }
 
 void SceneLibrary::UnregisterScene(const std::string& sceneName,
@@ -56,29 +67,83 @@ void SceneLibrary::UnregisterScene(const std::string& sceneName,
         return;
     }
 
-    std::vector<InkingScene*>& bucket = it->second;
-    bucket.erase(std::remove(bucket.begin(), bucket.end(), scene),
-                 bucket.end());
-
-    // 该名字下已经没有实例，就把名字本身也移掉，
-    // 否则 GetAllSceneNames / SceneCount 会把空壳算进去。
-    if (bucket.empty()) {
-        table.erase(it);
+    // 只摘自己的那一份：名字下已经换成别的场景时什么都不做，
+    // 否则会把别人的登记误删掉（换名字重注册那条路上就会碰到）。
+    if (it->second != scene) {
+        return;
     }
+
+    table.erase(it);
+
+    // 顺手把活跃指针也摘掉，避免它指向一个已经退出登记的场景。
+    if (activeScene() == scene) {
+        activeScene() = nullptr;
+    }
+}
+
+InkingScene* SceneLibrary::FindScene(const std::string& sceneName) {
+    const SceneMap& table = scenes();
+    const auto it = table.find(sceneName);
+    return it != table.end() ? it->second : nullptr;
+}
+
+bool SceneLibrary::CloseScene(const std::string& sceneName) {
+    InkingScene* scene = FindScene(sceneName);
+    if (scene == nullptr) {
+        return false;
+    }
+
+    // 先通知场景自己"被关掉了"，再从库里摘掉：
+    // 反过来的话，场景那边还得反查一次自己的名字。
+    scene->MarkClosed();
+    UnregisterScene(sceneName, scene);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// 活跃态
+// ---------------------------------------------------------------------------
+
+void SceneLibrary::SetActiveScene(InkingScene* scene) {
+    InkingScene*& current = activeScene();
+    if (current == scene) {
+        return;
+    }
+
+    // 旧的自动进入静默：不渲染、跟着渲染的那组逻辑也不动。
+    // 数据还在、能读，所以"先把数据拿完再切场景"这条路是通的。
+    if (current != nullptr) {
+        current->SetActiveFromLibrary(false);
+    }
+
+    current = scene;
+
+    if (current != nullptr) {
+        current->SetActiveFromLibrary(true);
+    }
+}
+
+InkingScene* SceneLibrary::GetActiveScene() {
+    return activeScene();
+}
+
+bool SceneLibrary::RenderScene(SDL_Renderer* renderer) {
+    InkingScene* scene = activeScene();
+
+    // 只渲染活跃场景：停放态（注册被驳回）、静默态（被顶掉的）、
+    // 已经关闭的场景都不会走到这里。每个场景一帧只渲染一次，
+    // 也是靠"活跃只有一个"这条保证的。
+    if (scene == nullptr || renderer == nullptr) {
+        return false;
+    }
+
+    scene->Render(renderer);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
 // 查询
 // ---------------------------------------------------------------------------
-
-std::vector<InkingScene*> SceneLibrary::GetScenes(const std::string& sceneName) {
-    const SceneMap& table = scenes();
-    const auto it = table.find(sceneName);
-    if (it != table.end()) {
-        return it->second;  // 拷贝一份返回，别把内部存储暴露出去
-    }
-    return {};
-}
 
 std::vector<std::string> SceneLibrary::GetAllSceneNames() {
     std::vector<std::string> names;
@@ -90,11 +155,11 @@ std::vector<std::string> SceneLibrary::GetAllSceneNames() {
 }
 
 std::size_t SceneLibrary::SceneCount() {
-    std::size_t count = 0;
-    for (const auto& pair : scenes()) {
-        count += pair.second.size();
-    }
-    return count;
+    return scenes().size();
+}
+
+bool SceneLibrary::IsNameTaken(const std::string& sceneName) {
+    return scenes().find(sceneName) != scenes().end();
 }
 
 }  // namespace ink

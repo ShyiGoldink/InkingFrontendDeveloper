@@ -1,0 +1,7 @@
+{
+    "$comment": "坏样例：name 与文件名不一致（生成器按名字生成类与查找键）。",
+    "name": "someOtherName",
+    "width": 200,
+    "height": 100,
+    "normal": { "type": "color", "source": "0|0|0|1" }
+}

@@ -1,0 +1,7 @@
+{
+    "$comment": "能过但会提醒：img 类型还没落地（纹理层）。生成器不该因此失败。",
+    "name": "imageButton",
+    "width": 120,
+    "height": 40,
+    "normal": { "type": "img", "source": "D:/assets/btn.png" }
+}

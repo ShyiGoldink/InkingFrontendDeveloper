@@ -1,6 +1,9 @@
 #include <window/InkingWindow.h>
 
 #include <ink/basic/InkLog.h>
+#include <ink/basic/Timeline.h>
+#include <scene/InkingScene.h>
+#include <scene/SceneLibrary.h>
 
 #include <SDL3/SDL.h>
 
@@ -14,7 +17,13 @@ namespace {
 
 constexpr const char* kModuleName = "InkingWindow";
 
-/// 帧节流：vsync 还没接上，先用固定节拍（16ms ≈ 60Hz）。
+/**
+ * 帧节流的兜底：vsync 接不上时用的固定节拍（16ms ≈ 60Hz）。
+ *
+ * 注意它**不是**精确的 60fps：`sleep_for` 不扣本帧耗时，实际一帧是
+ * 16ms + 工作时间。正常情况下走 vsync（`SDL_SetRenderVSync`），
+ * 这条只在无头 / 无显示环境接不上 vsync 时兜底。
+ */
 constexpr std::chrono::microseconds kFrameInterval{16000};
 
 /// 无头冒烟：设了 INK_AUTOQUIT 就跑这么久然后自己退出。
@@ -67,10 +76,12 @@ float letterboxMagnification(SDL_Window* window) {
  * InkingWindow 本身是单例，这份状态也天然只有一份。
  */
 struct WindowState {
-    SDL_Window*   window = nullptr;   /** SDL 窗口句柄 */
-    SDL_Renderer* renderer = nullptr; /** SDL 渲染器句柄 */
-    bool          open = false;       /** 是否已经成功打开 */
-    std::string   sceneName;          /** 当前要展示的场景名 */
+    SDL_Window*   window = nullptr;     /** SDL 窗口句柄 */
+    SDL_Renderer* renderer = nullptr;   /** SDL 渲染器句柄 */
+    bool          rendererReady = false;/** 渲染器是否真的建起来了 */
+    bool          vsyncActive = false;  /** vsync 是否接上了（决定还要不要自己 sleep） */
+    bool          open = false;         /** 是否已经成功打开 */
+    std::string   sceneName;            /** 当前要展示的场景名 */
 };
 
 /** 返回唯一的窗口状态。 */
@@ -85,6 +96,7 @@ void releaseWindow(WindowState& s) {
         SDL_DestroyRenderer(s.renderer);
         s.renderer = nullptr;
     }
+    s.rendererReady = false;
 
     if (s.window) {
         SDL_DestroyWindow(s.window);
@@ -185,6 +197,36 @@ bool pumpEvents(WindowState& s, MouseInput& mouse) {
 }
 
 /**
+ * 每帧把指针状态喂给活跃场景，并派发一次。
+ *
+ * 位置：事件泵之后（设计坐标刚算完）、时间线推进之前——和
+ * `SceneLibrary::RenderScene` 同一个落点（"只有活跃场景"这条规矩的唯一出口）。
+ *
+ * 为什么由窗口层喂：设计坐标的换算要走渲染器（letterbox 有黑边偏移），
+ * 那是渲染器的职责，场景层不该认识渲染器（docs/AGENTS.md §6 第 8 条）。
+ * 场景只接受"设计坐标 + 按没按下"这四个值。
+ *
+ * 为什么不在事件循环里直接派发：一帧里可能有多个移动事件，逐个派发等于
+ * 同一帧判断多次；docs/InputDesign.md §1 定的是"每帧只判断一次"。
+ */
+void dispatchPointer(WindowState& s, const MouseInput& mouse) {
+    InkingScene* scene = SceneLibrary::GetActiveScene();
+    if (scene == nullptr) {
+        return;
+    }
+
+    const MouseState& state = mouse.GetState();
+    // 指针在不在窗口里：移出去时不该继续悬停，也不该在窗口外"按下"。
+    const bool inside =
+        s.window != nullptr
+        && (SDL_GetWindowFlags(s.window) & SDL_WINDOW_MOUSE_FOCUS) != 0;
+
+    scene->SetPointerState(state.design.x, state.design.y, state.leftButtonDown,
+                           inside);
+    scene->DispatchPointer();
+}
+
+/**
  * 每帧把展示倍率刷成当前值。
  *
  * 不靠事件驱动：全屏切换、移动到不同 DPI 的显示器、系统缩放变化……SDL 发的事件
@@ -206,13 +248,35 @@ void syncMagnification(WindowState& s, InkingWindow& window) {
 }
 
 /**
- * 占位绘制：底色 + 跟着指针走的小方块。
+ * 上一帧真的渲染了哪个场景（没有场景时为 nullptr）。
  *
- * 这是临时脚手架，作用只有一个——肉眼确认「窗口坐标 → 设计坐标」换算对不对：
- * 拉成别的窗口比例，方块也应该准确贴在指针上。
- * Canvas / 场景绘制落地后，这个函数整段删掉。
+ * 纯自检用：主循环跑完、窗口释放时会清掉场景名，所以"窗口确实按名字解析到
+ * 场景并把它渲染出来了"这件事，只能靠这里的记录来验。
+ * 函数内静态量，避开静态初始化顺序问题（docs/AGENTS.md §6 第 12 条）。
  */
-void drawPlaceholder(SDL_Renderer* renderer, const MouseInput& mouse) {
+InkingScene*& lastRenderedScene() {
+    static InkingScene* scene = nullptr;
+    return scene;
+}
+
+/**
+ * 绘制这一帧：底色 → 当前场景的绘制列表 → 指针标记。
+ *
+ * 场景那一笔是真正的渲染路径：`InkingScene::Render` 在内部把顺序重建到最新
+ * （惰性、每帧最多一次），再按 z 序把每个节点提交给渲染器。
+ *
+ * 指针小方块是临时脚手架，作用只有一个——肉眼确认「窗口坐标 → 设计坐标」
+ * 换算对不对：拉成别的窗口比例，方块也应该准确贴在指针上。
+ * SDF 形状层 / 样式层接手后，这一段连同 SDL_RenderFillRect 一起删掉。
+ */
+void drawFrame(WindowState& s, const MouseInput& mouse) {
+    SDL_Renderer* renderer = s.renderer;
+
+    // 自检钩子：记录这一帧真的渲染了哪个场景。
+    // 窗口释放时会清掉场景名，所以"窗口确实解析到场景并渲染了"这件事
+    // 只能靠这里的记录来验。
+    lastRenderedScene() = SceneLibrary::GetActiveScene();
+
     if (renderer == nullptr) {
         return;
     }
@@ -221,45 +285,88 @@ void drawPlaceholder(SDL_Renderer* renderer, const MouseInput& mouse) {
                            kBackgroundBlue, 255);
     SDL_RenderClear(renderer);
 
-    const MousePoint& point = mouse.GetState().design;
-    constexpr float kCursorSize = 16.0f;
-    const SDL_FRect cursor{point.x - kCursorSize * 0.5f,
-                           point.y - kCursorSize * 0.5f,
-                           kCursorSize, kCursorSize};
-    SDL_SetRenderDrawColor(renderer, 86, 156, 214, 255);
-    SDL_RenderFillRect(renderer, &cursor);
+    // 当前场景的整棵渲染树。经 SceneLibrary 走一道，而不是直接调场景的
+    // Render（那是 protected）：这样"只有活跃场景会被渲染"这条规矩只有
+    // 一个落点，将来上合批时提交层也落在这里。没有活跃场景时返回 false。
+    SceneLibrary::RenderScene(renderer);
+
+    if (s.rendererReady) {
+        const MousePoint& point = mouse.GetState().design;
+        constexpr float kCursorSize = 16.0f;
+        const SDL_FRect cursor{point.x - kCursorSize * 0.5f,
+                               point.y - kCursorSize * 0.5f,
+                               kCursorSize, kCursorSize};
+        SDL_SetRenderDrawColor(renderer, 240, 200, 80, 255);
+        SDL_RenderFillRect(renderer, &cursor);
+    }
 
     SDL_RenderPresent(renderer);
 }
 
 /**
- * 主循环：事件泵 → 鼠标换算 → 每帧更新 → 绘制 → 帧末收尾 → 节流。
+ * 主循环：事件泵 → 展示倍率 → 时间线 → 绘制 → 帧末收尾 → 节流。
  *
- * 骨架期还没有场景，所以“每帧更新”和“绘制”都是占位的；等 Scene / Canvas
- * 落地，替换的只是这两段，循环骨架不用动。
+ * 时间线是这里的节拍器：逻辑步固定 50Hz，每帧通道和渲染同拍。
+ * 接上 vsync 之后节流交给 SDL，不再自己 sleep。
  */
 void runLoop(WindowState& s, MouseInput& mouse, InkingWindow& window) {
     const bool autoQuit = SDL_getenv("INK_AUTOQUIT") != nullptr;
     const auto start = std::chrono::steady_clock::now();
+
+    // 整个 UI 的唯一时间源。逻辑步长取默认的 1/50s。
+    Timeline timeline;
+
+    timeline.SetLogicCallback([](double fixedStep) {
+        // 固定逻辑步：每次派发都喂同一个步长，状态机要的就是确定的步。
+        if (InkingScene* scene = SceneLibrary::GetActiveScene()) {
+            scene->TickLogic(fixedStep);
+        }
+    });
+
+    // 每帧通道跟着渲染走：真实 delta，和这一帧画出来的东西对齐。
+    timeline.SetFrameCallback([](double delta) {
+        if (InkingScene* scene = SceneLibrary::GetActiveScene()) {
+            scene->TickFrame(delta);
+        }
+    });
+
+    auto previousFrame = std::chrono::steady_clock::now();
     bool running = true;
 
     while (running) {
         // 1. 事件泵：退出、键盘、鼠标都在这里变成状态。
         running = pumpEvents(s, mouse);
 
-        // 2. 每帧更新：展示倍率跟着窗口/DPI 走；Scene 落地后这里还要做
-        //    isDirty → query，现在唯一的输入源就是鼠标移动。
+        // 2. 展示倍率跟着窗口 / DPI 走。
         syncMagnification(s, window);
 
-        // 3. 绘制（占位）。
-        drawPlaceholder(s.renderer, mouse);
+        // 2b. 指针：把设计坐标与按键状态喂给活跃场景，并派发一次
+        //     （悬停进出 / 按下 / 抬起触发点击）。放在推进时间线之前，
+        //     这样本帧画出来的就是本帧的交互结果，不会差一帧。
+        dispatchPointer(s, mouse);
 
-        // 4. 帧末收尾：瞬时状态一帧只清一次。放在这里而不是事件循环里，
+        // 3. 推进时间线。delta 用**真实流逝时间**，所以某帧掉到 30ms 也不会
+        //    让逻辑时间相对墙上时钟漂移——累加器会把欠的步补上。
+        const auto now = std::chrono::steady_clock::now();
+        const double deltaSeconds =
+            std::chrono::duration<double>(now - previousFrame).count();
+        previousFrame = now;
+
+        timeline.Advance(deltaSeconds);
+
+        // 4. 绘制：底色 + 当前场景的整棵渲染树 + 指针标记。
+        drawFrame(s, mouse);
+
+        // 5. 帧末收尾：瞬时状态一帧只清一次。放在这里而不是事件循环里，
         //    否则一帧里的多个移动事件会被后一个清掉。
         mouse.ResetFrameFlags();
 
-        // 5. 节流。
-        std::this_thread::sleep_for(kFrameInterval);
+        // 6. 节流。接了 vsync 就交给 SDL（它会阻塞到下一次垂直回扫），
+        //    没接上时才退回固定 sleep——sleep 不扣本帧耗时，
+        //    实际是 16ms + 工作时间，这是没 vsync 时的将就之法。
+        if (!s.vsyncActive) {
+            std::this_thread::sleep_for(kFrameInterval);
+        }
 
         if (autoQuit
             && std::chrono::steady_clock::now() - start > kAutoQuitAfter) {
@@ -272,6 +379,10 @@ void runLoop(WindowState& s, MouseInput& mouse, InkingWindow& window) {
 
 InkingWindow::InkingWindow() : InkingStaticAnchor(nullptr, rootAnchorData()) {}
 
+InkingScene* GetLastRenderedScene() noexcept {
+    return lastRenderedScene();
+}
+
 InkingWindow::~InkingWindow() {
     WindowState& s = state();
     if (s.open) {
@@ -283,6 +394,12 @@ InkingWindow::~InkingWindow() {
 InkingWindow& InkingWindow::Instance() {
     static InkingWindow instance;
     return instance;
+}
+
+InkingScene* InkingWindow::GetCurrentScene() const {
+    // 当前活跃（正在渲染）的场景。活跃态由 SceneLibrary 维护：
+    // 切场景时旧的自动进入静默，所以这里拿到的永远是"该渲染的那一个"。
+    return SceneLibrary::GetActiveScene();
 }
 
 int InkingWindow::GetWindowWidth() const noexcept {
@@ -330,13 +447,38 @@ bool InkingWindow::setWindowHeight(int height) {
     return true;
 }
 
+/**
+ * 按名字把某个场景设为活跃；找不到 / 名字为空时返回 false。
+ *
+ * 活跃态统一交给 SceneLibrary 管：切换时旧的自动进入静默（不渲染、
+ * 跟着渲染的逻辑也停），新的开始活跃。窗口自己不保存场景指针，
+ * 免得在场景关闭 / 析构之后留下野指针。
+ */
+bool showSceneByName(const std::string& sceneName) {
+    if (sceneName.empty()) {
+        SceneLibrary::SetActiveScene(nullptr);
+        return false;
+    }
+
+    InkingScene* scene = SceneLibrary::FindScene(sceneName);
+    if (scene == nullptr) {
+        INK_LOG_WARN(kModuleName, "找不到场景：" + sceneName);
+        return false;
+    }
+
+    SceneLibrary::SetActiveScene(scene);
+    return true;
+}
+
 void InkingWindow::Show(const std::string& sceneName) {
     WindowState& s = state();
 
     if (s.open) {
         // 主循环跑起来之后，只有场景回调里再调 Show() 会走到这条分支——
         // 那正是运行期换场景的用法，所以这里是“切场景”而不是“忽略重复调用”。
+        // 旧场景会在这里自动进入静默。
         s.sceneName = sceneName;
+        showSceneByName(sceneName);
         INK_LOG_INFO(kModuleName, "窗口已经打开，切换场景：" + sceneName);
         return;
     }
@@ -359,29 +501,67 @@ void InkingWindow::Show(const std::string& sceneName) {
         return;
     }
 
+    // 渲染器建不起来（无 GPU / 无显示 / 驱动缺失）时只降级、不退出：
+    // 窗口和主循环照旧跑，只是这一帧画不出东西——渲染树本身仍然每帧更新，
+    // 自检和坐标换算都还能验。以前这里是"渲染器失败就整个放弃"，
+    // 在无头环境（CI、冒烟测试）下直接把窗口也毙了。
     s.renderer = SDL_CreateRenderer(s.window, nullptr);
-    if (!s.renderer) {
-        INK_LOG_ERROR(kModuleName,
-                      std::string("SDL_CreateRenderer 失败：") + SDL_GetError());
-        SDL_DestroyWindow(s.window);
-        s.window = nullptr;
-        SDL_Quit();
-        return;
+    s.rendererReady = (s.renderer != nullptr);
+    if (!s.rendererReady) {
+        INK_LOG_WARN(kModuleName,
+                     std::string("SDL_CreateRenderer 失败，降级为无渲染：")
+                         + SDL_GetError());
+    } else {
+        // 设计尺寸只在这里用一次：它定义的是逻辑坐标系，
+        // letterbox 保证任何窗口比例下 UI 都不变形，多余空间留黑边。
+        SDL_SetRenderLogicalPresentation(
+            s.renderer,
+            inking::kDesignWidth,
+            inking::kDesignHeight,
+            SDL_LOGICAL_PRESENTATION_LETTERBOX);
+
+        // -------------------------------------------------------------------
+        // 打开绘制的 alpha 混合。
+        //
+        // SDL 的**绘制**混合模式默认是 `SDL_BLENDMODE_NONE`（和纹理的
+        // `SDL_SetTextureBlendMode` 是两套东西）：那时 `SDL_SetRenderDrawColor`
+        // 的 alpha 会被**原样写进目标**，不参与合成。后果是"半透明"根本不存在——
+        // 按钮 hover 把 0.75 改成 0.85，画出来只是把底色整块换成另一个不透明的
+        // 黑，眼睛看不出任何变化（实测：BLENDMODE_NONE 下按钮里读出 0xBF000000、
+        // 打开之后读出 0xFF040406，后者才是"0.75 的黑叠在底色上"）。
+        //
+        // 为什么在这里设一次而不是每个组件各设一次：混合是**渲染器级的开关**，
+        // 每个组件都调一遍纯属重复；而且漏一个就会出现"界面上有的半透明生效、
+        // 有的不生效"——那种不一致比整块不透明难查得多。
+        //
+        // 副作用（预期内）：所有画出来的颜色从此都按 alpha 合成，
+        // `AnchorData::color` 里的 alpha 开始真的有意义。
+        // -------------------------------------------------------------------
+        SDL_SetRenderDrawBlendMode(s.renderer, SDL_BLENDMODE_BLEND);
+
+        // vsync：接上之后 SDL_RenderPresent 会阻塞到下一次垂直回扫，
+        // 主循环就不用自己 sleep 了——固定 sleep 不扣本帧耗时，
+        // 实际跑出来是 16ms + 工作时间，帧率会低于 60 且抖动。
+        // 无头 / 无显示环境下可能接不上，那时退回 sleep（见 runLoop）。
+        s.vsyncActive = SDL_SetRenderVSync(s.renderer, 1);
+        if (s.vsyncActive) {
+            INK_LOG_DEBUG(kModuleName, "vsync 已接上，节流交给 SDL");
+        } else {
+            INK_LOG_WARN(kModuleName,
+                         std::string("vsync 没接上，退回固定节流：")
+                             + SDL_GetError());
+        }
     }
 
-    // 设计尺寸只在这里用一次：它定义的是逻辑坐标系，
-    // letterbox 保证任何窗口比例下 UI 都不变形，多余空间留黑边。
-    SDL_SetRenderLogicalPresentation(
-        s.renderer,
-        inking::kDesignWidth,
-        inking::kDesignHeight,
-        SDL_LOGICAL_PRESENTATION_LETTERBOX);
-
-    // 展示倍率：设计单位 → 设备像素。窗口层写一次，之后跟着窗口尺寸事件走。
+    // 展示倍率：设计单位 → 设备像素。窗口层写一次，之后每帧跟着窗口尺寸刷。
     SetMagnification(letterboxMagnification(s.window));
 
     s.open = true;
     s.sceneName = sceneName;
+
+    // 场景的活跃态在这里落地：把指定场景设为"正在渲染"的那一个。
+    // 名字找不到（还没构造 / 已被关闭）时只记名字，画面上就没有场景。
+    showSceneByName(sceneName);
 
     INK_LOG_PASS(kModuleName,
                  "窗口已打开 " + std::to_string(_windowWidth) + "x"

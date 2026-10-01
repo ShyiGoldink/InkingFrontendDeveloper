@@ -22,6 +22,8 @@
 | Ninja | 1.10 | CMake 预设（`msys2-*`）用的生成器；没装也能构建，见“没有 Ninja 时” |
 | Git | 2.x | 拉取 SDL3 源码（`INK_SDL3_SOURCE=fetch` 时） |
 | SDL3 | 3.2+ | 见下文“SDL3 来源” |
+| SDL3_image | 3.4+ | **可选**，图片解码。缺失只关掉图片功能，不影响构建；见 docs/SETUP.md |
+| SDL3_ttf | 3.2+ | **可选**，文字渲染（含 CJK）。缺失只关掉文字功能，不影响构建；见 docs/SETUP.md |
 
 ## 快速开始
 
@@ -60,6 +62,33 @@ Inking: SDL3 built from source (release-3.4.2) # 拉源码一起编译
 | `system` | 只用系统装的 SDL3；找不到直接报错，不联网 |
 | `fetch` | 总是拉官方源码一起编译，忽略系统里装了什么 |
 | `local` | 只用 `INK_SDL3_LOCAL_DIR` 指的目录，不联网也不查系统 |
+
+### SDL3_image（可选）
+
+图片解码单独走一套**同样**的四选一策略（`INK_SDL3_IMAGE_SOURCE`，
+`auto` / `system` / `fetch` / `local`），但它是**可选**依赖：
+接不上只打一条 WARNING、关掉图片相关代码，其余照常构建。
+
+```sh
+pacman -S mingw-w64-ucrt-x86_64-sdl3-image     # MSYS2 UCRT64
+cmake --preset msys2-debug -DINK_ENABLE_SDL3_IMAGE=OFF   # 或者直接不要它
+```
+
+接上之后用 `build/<预设>/bin/ink_image_test.exe` 验证（内存 PNG → 解码 → 校验像素）。
+详见 [docs/SETUP.md](docs/SETUP.md) 第 4 节。
+
+### SDL3_ttf（可选）
+
+文字渲染，同样四选一（`INK_SDL3_TTF_SOURCE`），同样缺失即降级。
+
+```sh
+pacman -S mingw-w64-ucrt-x86_64-sdl3-ttf       # MSYS2 UCRT64
+cmake --preset msys2-debug -DINK_ENABLE_SDL3_TTF=OFF     # 或者直接不要它
+```
+
+版本数字不用对齐（SDL3_ttf 只要求 `SDL3 >= 3.2.6`），自检
+`build/<预设>/bin/ink_ttf_test.exe` 会真的打开系统字体、量中英文尺寸、查汉字字形。
+详见 [docs/SETUP.md](docs/SETUP.md) 第 5 节。
 
 ### 指定本地 SDL3（离线推荐）
 
@@ -113,14 +142,30 @@ INK_AUTOQUIT=1 build/msys2-debug/bin/ink_test.exe       # 自检 + 跑一次窗�
 ├─ CMakePresets.json        CMake 预设（msys2-debug / msys2-release / test-debug）
 ├─ cmake/
 │  ├─ SDL3.cmake             SDL3 来源策略（auto / system / fetch / local）
+│  ├─ SDL3_image.cmake       同上（可选依赖）
+│  ├─ SDL3_ttf.cmake         同上（可选依赖）
+│  ├─ inkgen.cmake           代码生成器本体 + 它的自检
 │  └─ CMakeUserPaths.cmake.example  本机路径覆盖模板（复制去掉 .example 即生效）
+├─ tools/inkgen/             代码生成器：CXXCSS json → C++（构建期工具，只依赖标准库）
 ├─ docs/
 │  ├─ README.md              本文件
-│  ├─ SETUP.md               SDL3 安装与配置指南（跨平台）
+│  ├─ SETUP.md               SDL3 / SDL3_image / SDL3_ttf 安装与配置指南（跨平台）
+│  ├─ UsageReport.md         使用报告：现在能用什么、怎么用、坑在哪
+│  ├─ API.md                 对外 API 设计稿
+│  ├─ InputDesign.md         输入与命中方案设计稿
+│  ├─ DevelopLog.md          开发日志
+│  ├─ TempTask.md            跨会话交接：已经有什么 / 接下来做什么
+│  ├─ CodeStyleRule.md       编码与解耦规范
 │  └─ AGENTS.md              Agent 开发入口
-├─ include/ink/              公共头文件（对外 API）
+├─ CXXCSS/                   界面描述文件（配置格式见 CXXCSS/CXXCSS.md）
+│  ├─ CXXCSS.md              配置格式说明
+│  └─ Button/                按钮配置（*.example.json 只作参考，不参与生成）
+├─ include/                  公共头文件：ink/（底座）、button/、scene/、window/、input/
 ├─ src/                      核心库源码
-├─ examples/basic/           最小开窗示例（1280×720 letterbox）
+├─ examples/
+│  ├─ basic/                 最小开窗示例（1280×720 letterbox）
+│  ├─ overlap/               渲染顺序示例
+│  └─ buttons_demo/          **CXXCSS 驱动**的按钮示例，同时是端到端自检
 └─ third_party/sdl3/         本地 SDL3 安装（可选，手动放入）
 ```
 
@@ -202,7 +247,14 @@ SDL3 支持的平台就是本项目支持的平台（Windows/Linux/macOS/等）�
 - [x] 编译期开关 ISDEBUG / ISLOG / ISMESSAGE：关闭后对应代码不进二进制
       （ISDEBUG 关闭时连控制台窗口一起去掉）
 - [x] InkingWindow 单例（窗口尺寸运行期可调，设计尺寸是编译期常量）
-- [x] 事件泵 + 鼠标输入接入（`Show()` 内主循环；绘制仍是占位）
+- [x] 事件泵 + 鼠标输入接入（`Show()` 内主循环）
+- [x] 场景登记：SceneLibrary + RAII 令牌（构造即登记、析构即注销）；
+      同名同期只能有一个，名字被占则后来者被驳回进"停放态"
+- [x] 基于锚点的渲染树：扁平绘制列表 + 惰性排序，按 z 序提交；
+      可见性、zindex、父子隐藏；静态节点用坐标快照、动态节点每帧现算
+- [x] 时间线：双速驱动（固定 50Hz 逻辑步 + 每帧通道 + 自定义频率订阅），
+      累加器追赶、真实 delta，节流走 vsync
+- [ ] 命中与三态 query（Block / PassThrough / Miss）
 - [ ] SDF 形状层
-- [ ] 样式/渲染层
+- [ ] 样式/渲染层（DrawCall 合批）
 - [ ] 描述文件 + 代码生成器

@@ -1,0 +1,8 @@
+{
+    "$comment": "坏样例：radius 写成字符串。新字段一律用数字（CXXCSS.md §2.1）。",
+    "name": "badRadiusString",
+    "width": 200,
+    "height": 100,
+    "normal": { "type": "color", "source": "0|0|0|1" },
+    "shape": { "type": "roundedRect", "radius": "10" }
+}

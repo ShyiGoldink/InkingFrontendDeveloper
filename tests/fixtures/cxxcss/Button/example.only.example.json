@@ -1,0 +1,7 @@
+{
+    "$comment": "文件名以 .example.json 结尾 → 按约定不参与生成，批量加载时被跳过。",
+    "name": "example.only",
+    "width": 64,
+    "height": 64,
+    "normal": { "type": "color", "source": "0|0|0|1" }
+}

@@ -1,0 +1,7 @@
+{
+    "$comment": "坏样例：widht 是 width 的拼写错误，生成器必须报错而不是当默认值。",
+    "name": "badUnknownField",
+    "widht": 200,
+    "height": 100,
+    "normal": { "type": "color", "source": "0|0|0|1" }
+}

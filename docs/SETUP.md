@@ -165,7 +165,131 @@ cmake --build SDL/build
 cmake --install SDL/build
 ```
 
-## 4. 源码分发 / 作为依赖被引入
+## 4. SDL3_image（可选依赖）
+
+用于图片解码（PNG / JPG / WebP / SVG 等）。来源由
+`INK_SDL3_IMAGE_SOURCE` 决定，**和 SDL3 完全同一套四选一**：
+`auto`（默认，本地目录 → 系统包 → 拉源码）/ `system` / `fetch` / `local`。
+
+> **和 SDL3 的关键区别：它是可选的。**
+> SDL3 找不到是致命错误（整个框架建不起来）；SDL3_image 找不到只是**少一项能力**，
+> 配置会打一条 WARNING 说明怎么装，然后**照常构建**，用到图片的代码不参与编译。
+> 只有显式指定成 `local`（"只用这个目录"）却用不了时才会直接报错——
+> 那是配置错误，不该悄悄退回别的来源。
+
+### 装它
+
+```sh
+# MSYS2 UCRT64（推荐，和工具链匹配）
+pacman -S mingw-w64-ucrt-x86_64-sdl3-image
+
+# Debian/Ubuntu
+sudo apt install libsdl3-image-dev
+
+# Fedora
+sudo dnf install SDL3_image-devel
+
+# macOS
+brew install sdl3_image
+```
+
+不装也能构建。不想要这个能力、也不想看提示，就显式关掉：
+
+```sh
+cmake --preset msys2-debug -DINK_ENABLE_SDL3_IMAGE=OFF
+```
+
+### 怎么确认接上了
+
+配置日志里会明确说：
+
+```text
+Inking: SDL3_image 来源策略 = auto
+Inking: using system SDL3_image (C:/msys64/ucrt64/lib/cmake/SDL3_image)
+Inking: SDL3_image 已接入（SDL3_image::SDL3_image）
+```
+
+没接上则是：
+
+```text
+CMake Warning ... Inking: 没接上 SDL3_image（...），图片加载相关功能会被关掉，其余部分照常构建。
+  想装上：MSYS2 UCRT64 执行 pacman -S mingw-w64-ucrt-x86_64-sdl3-image
+  ...
+```
+
+接上之后会有一个自检程序 `ink_image_test.exe`（跟着 `INK_BUILD_TESTS` 一起建），
+它会用编进源码里的一张 PNG 走一遍"内存 → 解码 → 校验像素"，退出码 0 才算真的可用：
+
+```sh
+build/msys2-debug/bin/ink_image_test.exe
+```
+
+### 离线：指向本地目录
+
+```sh
+cmake -B build/msys2-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug `
+  -DINK_SDL3_IMAGE_SOURCE=local `
+  -DINK_SDL3_IMAGE_LOCAL_DIR=C:/libs/SDL3_image
+```
+
+`local` 的含义是**只用这里**，不联网也不查系统。它不会满足于"系统里碰巧也有"——
+目录里没有 `lib/cmake/SDL3_image/SDL3_imageConfig.cmake` 就直接报错停下。
+
+### 关于版本配对
+
+SDL3_image 会和 SDL3 的**大版本**对齐（现在是 3.x）。混用不同来源时
+（例如本地 SDL3 3.4.2 + 系统 SDL3_image 3.4.6）实测可以正常工作，
+因为 `SDL3_imageConfig.cmake` 只要求 `SDL3 >= 3.4.0`。
+但**运行期**仍然要保证能找到 `SDL3_image.dll`（见下面第 8 节的 PATH 说明，同理）。
+
+## 5. SDL3_ttf（可选依赖）
+
+用于文字渲染（TrueType / OpenType，带 harfbuzz 整形，中文没问题）。
+来源一样由 `INK_SDL3_TTF_SOURCE` 决定，**和 SDL3 / SDL3_image 完全同一套四选一**。
+
+> 同样是**可选**依赖：接不上只打 WARNING、关掉文字功能，其余照常构建。
+> 只有显式 `local` 用不了才 fatal。
+
+### 装它
+
+```sh
+pacman -S mingw-w64-ucrt-x86_64-sdl3-ttf    # MSYS2 UCRT64
+sudo apt install libsdl3-ttf-dev            # Debian/Ubuntu
+sudo dnf install SDL3_ttf-devel             # Fedora
+brew install sdl3_ttf                       # macOS
+```
+
+或者不要它：`-DINK_ENABLE_SDL3_TTF=OFF`。
+
+### 版本不用对齐，不用慌
+
+MSYS2 里 SDL3 是 **3.4.x**、SDL3_image 是 **3.4.x**，而 SDL3_ttf 是 **3.2.2**。
+看起来差一截，但 **这是正常的**：三个库各自独立发版，`SDL3_ttfConfig.cmake` 只要求
+`SDL3 >= 3.2.6`。实测 SDL3 3.4.16 + SDL3_ttf 3.2.2 正常工作。
+
+### 怎么确认接上了
+
+```text
+Inking: SDL3_ttf 来源策略 = auto
+Inking: using system SDL3_ttf (C:/msys64/ucrt64/lib/cmake/SDL3_ttf)
+Inking: SDL3_ttf 已接入（SDL3_ttf::SDL3_ttf）
+```
+
+自检程序 `ink_ttf_test.exe` 会真的打开一份系统字体、量出中英文字符串的尺寸、
+并确认字体里有没有汉字字形：
+
+```sh
+build/msys2-debug/bin/ink_ttf_test.exe
+```
+
+它从一组候选路径里挑字体（优先 `C:/Windows/Fonts/msyh.ttc`，即微软雅黑）。
+**一个候选都没有时会打印"[跳过]"并仍然返回 0**——注意那代表"没验过"，
+不代表验过了。
+
+> 本自检**不涉及渲染**：文字画出来好不好看没有数值判据，
+> 按 [AGENTS.md](AGENTS.md) §4 第 4 条交给用户开窗确认。
+
+## 6. 源码分发 / 作为依赖被引入
 
 使用方通过 `add_subdirectory` 或 `FetchContent` 引入本库即可：
 
@@ -187,7 +311,7 @@ FetchContent_MakeAvailable(ink)
 或已装系统包。这与 SDL3 官方的源码分发方式保持一致，不额外维护
 预编译二进制。
 
-## 5. 常见问题
+## 7. 常见问题
 
 **Q：FetchContent 一直失败，说连不上 GitHub？**
 网络受限。改用系统包或本地目录，并顺手把来源钉死，免得它再偷偷联网：
@@ -220,10 +344,10 @@ Windows 上把 `SDL3.dll` 所在目录加入 PATH，或拷贝到可执行文件�
 
 **Q：不想联网，也不想装系统包？**
 用本地目录（方案 D）：`-DINK_SDL3_SOURCE=local -DINK_SDL3_LOCAL_DIR=...`。
-仓库里预放了一份 SDL3 在 `third_party/sdl3`，没有的话照第 6 节手动
+仓库里预放了一份 SDL3 在 `third_party/sdl3`，没有的话照第 8 节手动
 下载一份即可。
 
-## 6. 手动下载 SDL3（离线机器）
+## 8. 手动下载 SDL3（离线机器）
 
 如果机器无法访问 GitHub，但有浏览器/网盘/其他机器可以下载，按下面
 准备一个本地 SDL3 目录：

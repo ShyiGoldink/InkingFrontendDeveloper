@@ -1,0 +1,7 @@
+{
+    "$comment": "坏样例：颜色只给了 2 个通道（要 3 或 4 个：r|g|b 或 r|g|b|a）。",
+    "name": "badColorChannels",
+    "width": 200,
+    "height": 100,
+    "normal": { "type": "color", "source": "0|0" }
+}

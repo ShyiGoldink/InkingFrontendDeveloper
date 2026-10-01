@@ -1,0 +1,17 @@
+{
+    "$comment": [
+        "老写法：尺寸写成字符串、不写 hover / onclicked、不写 shape。",
+        "三种省略都该被接受，并且 hover / onclicked 标成「继承 normal」。"
+    ],
+    "name": "legacyButton",
+    "width": "320",
+    "height": "48",
+    "normal": {
+        "type": "color",
+        "source": "1|1|1|1"
+    },
+    "selfAnchorX": 0,
+    "selfAnchorY": 0,
+    "traceAnchorX": 0,
+    "traceAnchorY": 0
+}

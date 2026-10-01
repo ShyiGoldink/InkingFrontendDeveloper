@@ -1,0 +1,11 @@
+{
+    "$comment": "坏样例：text 里写了不存在的字段（按 CXXCSS.md §2.1 必须报错）。",
+    "name": "badUnknownTextField",
+    "width": 200,
+    "height": 100,
+    "normal": { "type": "color", "source": "0|0|0|1" },
+    "text": {
+        "fontSize": 16,
+        "alignment": "center"
+    }
+}
