@@ -1,5 +1,15 @@
 # 接下来做什么
 
+> ⚠️ **这份已归档（2026-10-02）：任务清单以 [`TaskGuide.md`](TaskGuide.md) 为准。**
+>
+> 它当初列的六步，现状是：第 1 步（组件框架）、第 2 步（形状层）、
+> 第 3 步（命中与三态）、第 4 步（生成器）**都已落地**；
+> 第 5 步（Scene 生成）**评估后撤销**（理由在 `CXXCSS/CXXCSS.md` §7.2）；
+> 第 6 步（DrawCall 合批）成了新一轮的 **T-6**。
+>
+> **保留它的理由**：下面的"约定与坑"和"跨会话交代"是历史现场记录，
+> 查旧账时有用。**开工只需读 `TaskGuide.md`。**
+
 > 这份是**跨会话交接**：上一个对话上下文太长，换新对话时先读这里。
 > 内容分三块：**已经有什么**（别重复踩）、**接下来做什么**（按顺序）、
 > **约定与坑**（别重复踩）。更细的实现细节在 `docs/AGENTS.md` 与 `docs/DevelopLog.md`；
@@ -27,8 +37,8 @@
 | `build/<预设>/bin/ink_render_probe.exe` | **离屏像素校验**：z 序压盖、背景板、可见性（不依赖桌面） |
 | `build/<预设>/bin/ink_button_test.exe` | Button：形状 SDF / 命中 / 颜色换算 / 三态 / 回调 / 批次登记 / **离屏三态像素** |
 | `build/<预设>/bin/inkgen_test.exe` | 生成器：JSON 解析、字段映射、**每一条报错**、产物内容 |
-| `build/<预设>/bin/ink_generated_test.exe` | 生成代码的运行期效果：静态登记 → 库里查得到 → 按名字构造 |
-| `build/<预设>/bin/buttons_demo.exe`（+`INK_AUTOQUIT=1`） | 端到端：配置 → 库 → 渲染树 → 模拟点击 → 回调；然后真开窗 |
+| `build/<预设>/bin/ink_generated_test.exe` | 生成代码的运行期效果：**生成类自带数据** → 按名字查也一致 |
+| `build/<预设>/bin/buttons_demo.exe`（+`INK_AUTOQUIT=1`） | 端到端：配置 → 类 → 渲染树 → 模拟点击 → 回调；然后真开窗 |
 | `build/<预设>/bin/ink_image_test.exe` / `ink_ttf_test.exe` | 两个可选依赖的接入探针 |
 
 **已落地的能力**（都能用，有自检）：
@@ -40,14 +50,19 @@
 - 时间线：固定 50Hz 逻辑步 + 每帧通道 + 自定义频率订阅，累加器追赶，截断防卡死
 - 窗口：vsync 节流、真实 delta、letterbox 坐标换算
 - 基础设施：HTML 日志、消息队列、任务队列、线程池、ISDEBUG/ISLOG/ISMESSAGE 开关
-- **Button 组件框架**（`include/button/`）：数据与逻辑分开、名字 → 配置的登记表、
-  三态状态机（只换颜色）、点击回调；`ink_button_test.exe` 全绿
+- **Button 组件框架**（`include/button/`）：数据与逻辑分开、三态状态机（只换颜色）、
+  点击回调；`ink_button_test.exe` 全绿
+- **每个名字生成一个独立的按钮类**（`ink::cxxcss::NormalButton`）：颜色 / 尺寸 /
+  形状 / 锚点全部烘成类里的字面量，构造时**不查任何表**——
+  "配置取不到"这条静默失败路径在类型上不存在。拼错名字 = 编译期红
 - **形状层第一档**（`include/ink/dataStruct/InkingShapeSpec.h`）：
-  `rect` / `roundedRect` / `circle` / `ellipse` 的 SDF + 命中 + AABB，
-  三者同源；**填充还没走 SDF**（仍是直角矩形，已知且自检有记录）
+  `rect` / `roundedRect` / `circle` / `ellipse` 的 SDF + 命中 + AABB，三者同源；
+  **填充也已经走同一份定义**（`detail::fillShape`：轮廓采样 + `SDL_RenderGeometry`
+  三角化 + 1 像素羽化边缘），所以圆角是真的圆、边缘是抗锯齿的。
+  第二档形状（`capsule` / `ring` / `line` / `polygon`）仍未实现
 - **代码生成器 `inkgen`**（`tools/inkgen/`）：读 `CXXCSS/Button/*.json` →
   校验 → 生成到 `build/`；CMake 一行接入（`ink_add_generated`）。
-  配置写错在**构建期**就红，产物带名字常量与启动期自动登记
+  配置写错在**构建期**就红；产物是"每个名字一个类 + 一个登记入口"
 - **点击真的能到按钮回调**（最小闭环）：`InkingAnchor::HitTest` +
   `InkingScene::DispatchPointer` + 窗口主循环每帧喂指针。
   **不是**完整命中方案（没有命中表、没有三态、没有 isDirty 帧计数）
@@ -59,15 +74,15 @@
   = 一个能点的窗口，`INK_AUTOQUIT=1` 下自己模拟一次点击、
   **并离屏采三态的像素**验证"悬停比通常亮"
 
-**未实现**：形状层的**抗锯齿填充**、完整的命中三态 query 与命中表、
-文字渲染（字形图集 / 纹理层）、`img` / `svg` 外观、Scene 的 CXXCSS 生成、
-DrawCall 合批。
+**未实现**：完整的命中三态 query 与命中表、第二档形状、
+文字渲染（字形图集 / 纹理层）、`img` / `svg` 外观（含内嵌图片资源）、
+Scene 的 CXXCSS 生成、按布局生成专用查找、DrawCall 合批。
 
 ---
 
 ## 二、接下来做什么（按顺序）
 
-### 第 1 步：以 Button 为样板，把组件框架搭全 ← **框架已落地，下一步是形状填充**
+### 第 1 步：以 Button 为样板，把组件框架搭全 ← **框架与形状填充都已落地**
 
 **目标**：做一个完整组件，把"一个组件应该怎么写"这套框架定下来。
 之后其它组件（Label / Panel / Input…）照抄结构，只实现自己的独特逻辑。
@@ -77,7 +92,7 @@ DrawCall 合批。
 ```text
 include/button/InkingStaticButton.h   组件：三态状态机 + 点击回调 + onRender
 include/button/ButtonData.h           纯数据：对应 button.example.json 的每个字段
-include/button/ButtonLibrary.h        名字 → ButtonData 的登记表（生成器的落点）
+include/button/ButtonLibrary.h        名字 → ButtonData 的登记表（按名字查时才用）
 src/button/*.cpp
 
 include/ink/dataStruct/InkingColor.h      颜色：0xAARRGGBB + 从 "0|0|0|0.75" 换算
@@ -85,6 +100,10 @@ include/ink/dataStruct/InkingShapeSpec.h  形状：rect / roundedRect / circle /
 include/ink/basic/InkingDraw.h            渲染助手（渲染器槽 + 按形状填色）
                  ^ 这个头 include 了 SDL，是**唯一**破了"公开头不拖 SDL"纪律的地方
                    （它是渲染层内部件，业务代码应该重写 onRender 而不是调它）
+
+生成物（build/ 下，不入源码树）：
+  button_service.h     每个名字一个类（配置烘在类里）+ RegisterAllButtons()
+  button_register.cpp  配置字面量 + 启动期登记（登记只是给"按名字查"用）
 ```
 
 **已经拍板的四件事**（理由都写在 `InkingStaticButton.h` 顶上，别回头改）：
@@ -95,17 +114,17 @@ include/ink/basic/InkingDraw.h            渲染助手（渲染器槽 + 按形�
    ChangeSelfAnchor / ChangeTraceAnchor / ChangeOffset。
 2. **形状层第一档已经和 Button 一起落地**：`SignedDistance` / `ShapeContains` /
    `GetShapeBounds` 三个派生量来自同一份定义，命中已经按圆角在判。
-3. **渲染后端没换**，所以填充还是直角矩形（下一件事就是这个）。
+3. **渲染后端没换**（还是 `SDL_Renderer`），填充走的是 `SDL_RenderGeometry`
+   三角化——那是第 2 步里选的 (b)，所以圆角真的圆了、边缘还有抗锯齿。
 4. **`text` 只实现到"能表达"**：字段齐全，但画的是同尺寸占位方块
    （要字形图集 + 纹理层才是真文字）。
    ⚠️ `CXXCSS.md` §5 的 `text` 字段**仍待核对**：那是从原示例注释推断的，
    没有示例文件对照。这次按它实现了，等于把它固化了一次——
    要改的话现在改，代价最小。
 
-**下一步（第 2 步的直接入口）**：定下圆角**填充**方案（TempTask 第 2 步的 a/b/c），
-然后换掉 `include/ink/basic/InkingDraw.h` 里的 `fillShapeBounds` 一个函数即可。
-自检里那条"填充仍是直角矩形"的 `[记录]` 就是这项工作的验收点：
-做完之后它应该能从"记录"改成断言。
+**这一步已经收尾**：圆角填充按 (b) 做完了（`detail::fillShape`，
+自检里那条 `[记录]` 已经改成真断言、并补了抗锯齿的数值判据）。
+同一条线上剩下的是**第二档形状**，见下面第 2 步末尾。
 
 **注意事项**：
 
@@ -113,8 +132,8 @@ include/ink/basic/InkingDraw.h            渲染助手（渲染器槽 + 按形�
   `InkingScene` 的登记、`SceneLibrary::RenderScene` 的提交层
 - 新增公开头后，**必须让它被至少一个 .cpp 或自检 include 一次**
   （否则可能是永远编译不过的死文件，而构建照样全绿——踩过）
-- `MouseHover` / `MousePress` / `MouseRelease` 现在**没人喂**：
-  等第 3 步把鼠标事件接到场景层，由命中结果推它们（接口已经按那时候的形状定好了）
+- `MouseHover` / `MousePress` / `MouseRelease` 现在**由场景层喂**
+  （`DispatchPointer`），组件自己不用管；手写用法仍然可以手动推
 
 ### 第 2 步：形状层（SDF）—— 与 Button 紧耦合，几乎是同一个会话的活
 
@@ -131,14 +150,18 @@ include/ink/basic/InkingDraw.h            渲染助手（渲染器槽 + 按形�
 - **明确不支持**：虚线（非单一距离场）、任意贝塞尔路径（要数值最近点求解）、
   文字（走 `text`）、纹理填充（纹理层的事）
 
-**待定的关键选择**：圆角的**抗锯齿填充**需要 GPU（`SDL_GPUShader` 或预烘距离场），
-现在只有 `SDL_Renderer` + `SDL_RenderFillRect`。三个选项：
+**关键选择（已定）**：圆角的**抗锯齿填充**当时列了三个选项：
 
 - (a) 换 SDL3 GPU API → 圆角/抗锯齿能做，但渲染层要重写
 - (b) 用 `SDL_RenderGeometry` 三角化圆角（CPU 分段，不改后端）→ 够用且便宜
 - (c) 形状层先只做裁剪 / 命中，填充暂时还是直角矩形 → 半成品
 
-**(b) 可能是性价比最高的**，因为它不需要换后端。
+**选了 (b)**，已落地：轮廓解析采样 → 三角化 → 边缘 1 像素羽化带
+（`include/ink/basic/InkingDraw.h` 的 `detail::fillShape`，
+实现 `src/ink/basic/InkingDraw.cpp`）。既没换后端，也没有 CPU 逐像素。
+**剩下的只有第二档形状**：`capsule` / `ring` / `line` / `polygon`
+要新写 SDF 公式与配置字段（`thickness` / `cap` / `sides` / `rotation`），
+生成器现在仍按原样报"格式里有定义但形状层还没实现"。
 
 ### 第 3 步：命中与三态 ← **只落了最小闭环，完整方案还没做**
 
@@ -169,12 +192,12 @@ include/ink/basic/InkingDraw.h            渲染助手（渲染器槽 + 按形�
 并测过；渲染提交顺序和它是**反向同源**的。`_dirty` + `MarkDirty` 已实现，
 只差帧计数那一段。`DispatchPointer` 的调用点就是将来查表的地方，换实现不动调用方。
 
-### 第 4 步：代码生成器 `inkgen` ← **已落地，还剩两件事**
+### 第 4 步：代码生成器 `inkgen` ← **已落地，还剩一件事**
 
 **已经能用了**（`tools/inkgen/`，构建期生成到 `build/`）：
 
-- 读 `CXXCSS/Button/*.json` → 校验 → 生成"名字常量 + 登记入口"的头 +
-  "配置数据 + 启动期自动登记"的源文件；
+- 读 `CXXCSS/Button/*.json` → 校验 → **为每个名字生成一个独立的类**
+  （配置作为字面量烘在类里）+ 一个登记入口；
 - CMake 一行接入：`ink_add_generated(目标 OUT_DIR … SOURCES …)`；
 - 配置写错在**构建期**报错（未知字段 / 名字不符 / 参数非法 / 重名），
   每条带文件与行号；`--validate` 只校验不写文件；
@@ -182,15 +205,33 @@ include/ink/basic/InkingDraw.h            渲染助手（渲染器槽 + 按形�
 
 **还剩**：
 
-1. **每个名字生成一个独立类**（`CXXCSS.md` §6 第 1 条）——
-   现在所有按钮还是同一个 `InkingStaticButton`，只生成了常量与配置；
+1. ~~每个名字生成一个独立类~~ ✅ **已做到**（`CXXCSS.md` §6 第 1 条）；
 2. **按布局类型生成专用查找**（§6 第 3 条）——命中还是线性扫。
 
-### 第 5 步：Scene 的 CXXCSS 生成
+**还没做的资源类字段**（想清楚再动，别半做）：
 
-`CXXCSS/Scene/<场景名>.json` 目前是**纸面约定**：场景名还是代码里的常量，
-`InkingScene` 的尺寸与锚点由 `sceneRootAnchorData()` 按设计画布定型。
-要做的话照 Button 那条路走一遍即可（生成器 + 一个 `k<场景名>Name` 常量）。
+- **图片**：`img` 目前只在生成期收下 + 提醒，运行期不画。真要落地是两半：
+  生成器把资源变成数据（小图烘成字节数组、大图拷进构建目录），
+  运行期再解码成纹理（用 SDL3_image 的 `IMG_Load_IO`，别自己写解码器）。
+  **超过阈值时建议直接报错**而不是悄悄拷贝——拷贝规则牵扯打包与工作目录，
+  比内嵌复杂得多。
+- **SVG**：全量 SVG 是 XML 解析 + path 语法 + 曲线细分，不是"顺手也能做"。
+  合理范围是先定**支持子集**（`rect` / `circle` / `ellipse` / 只含直线与圆弧的 `path`），
+  生成期转成形状层能表达的东西，不支持的标签**明确报错**。
+
+### 第 5 步：Scene 的 CXXCSS 生成 —— ⛔ **已评估，不做**
+
+曾经照 Button 那条路做过一版（生成器 + 一个场景类），跑通后**撤销**了：
+收益用手写就能拿到，代价是固定的。完整理由见 `CXXCSS/CXXCSS.md` §7.2 与
+`TaskGuide.md` 的 T-7 那节。一句话：
+
+- "组件不用传 `parent`"靠的是**成员 + 默认成员初始化器 `{this}`**这个写法；
+- "名字有编译期保险"里，组件类型名的保险由生成的**按钮类**提供
+  （`NormalButton` 拼错即编译错误），场景名一行 `kName` 常量就够；
+- 而生成场景会带来：一个界面两组文件、表达力受限（不能按条件建组件等）、
+  多一类输入与跨文件校验。
+
+推荐写法（手写 5 行）与示例见 `examples/scene_demo/`。
 
 ### 第 6 步（最后）：DrawCall 合批
 
@@ -214,13 +255,15 @@ include/ink/basic/InkingDraw.h            渲染助手（渲染器槽 + 按形�
 | 依赖来源 | 必须显式可控，别写死；本机路径写 `cmake/CMakeUserPaths.cmake` |
 | 开关 | ISDEBUG/ISLOG/ISMESSAGE 及 `INK_HAS_SDL3_*` 都挂 PUBLIC（否则 ODR 违规） |
 | 命名 | 写入口 `PascalCase`，钩子 `on` 开头；成员 `_camelCase`（**别用 `m_`**） |
+| 生成物 | 只落 `build/`，不进源码树；配置写错在构建期报错 |
 
-### 最容易踩的坑（完整 28 条在 `AGENTS.md` §6）
+### 最容易踩的坑（完整 34 条在 `AGENTS.md` §6）
 
 1. **别用 PowerShell 读写源码**：`Set-Content` / `-replace | Set-Content` 会按控制台
    编码回写，中文注释变乱码、文件不再是合法 UTF-8。**已踩两次**
    （`InkingAnchor.cpp` 靠 git checkout 救回，`render_probe.cpp` 是新文件只能整个重写）。
-   改源码一律用编辑工具。
+   改源码一律用编辑工具。（后来又踩了一次：`docs/TempTask.md` 被清成 0 字节，
+   靠 `git show HEAD:docs/TempTask.md` 重建。）
 2. **绘制提交是 z 从小到大**，和 `IsAbove` 的答案**相反**（画家算法先画底下的）。
    第一版按降序排 → 铺满整屏的背景板最后画，把画面全盖了，**而所有断言都是绿的**。
    这类"顺序对但方向错"只有真像素能钉死。
@@ -239,18 +282,25 @@ include/ink/basic/InkingDraw.h            渲染助手（渲染器槽 + 按形�
 9. **静默初始化顺序**：注册表用**函数内静态量**，不用类的静态数据成员
    （后者有静态初始化 / 析构顺序问题）。
 10. **被驳回的登记令牌绝不能去注销**：否则后来者一析构，正主从库里凭空消失。
+11. **SDL 的绘制混合模式默认是关的**：颜色的 alpha 会被**原样写进像素**，
+    "半透明"根本不存在。窗口里设一次 `SDL_BLENDMODE_BLEND` 即可。
+    配套的测试陷阱：离屏断言若"清成透明黑再画"，混合开没开读出**同一个值**，
+    断言等于没写——底色必须是不透明的。
+12. **`enable_testing()` 必须在任何 `add_subdirectory` 之前**：写在文件末尾会让
+    子目录里的 `add_test` **静默失效**（测试编得出来、手动跑也过，就是 `ctest` 里没有）。
 
 ### 验证方式的选择（重要）
 
 - **能变成数值判据的**（像素颜色、坐标、数量、顺序）→ 自己写断言验；
   渲染类用**离屏读回**（`tests/render_probe.cpp` 那条路）。
+  离屏采样记得对齐和窗口一样的三个前提：逻辑分辨率、混合模式、场景是活跃的。
 - **需要"看图"才能判断的**（字体、颜色观感、间距别扭、动画顺眼）→
   **停下来交给用户**，把示例跑起来、说清该看什么。**别试图截图**——
   这台机器上别的窗口会遮挡，实测折腾很久只捕到别人家的窗口。
 
 ### 开发日志要维护
 
-`docs/DevelopLog.md` 记到 Step 10。每做完一块就补一条，
+`docs/DevelopLog.md` 记到 Step 12。每做完一块就补一条，
 写"做了什么 + **为什么这么选**"，后者比前者值钱。
 
 ---
@@ -297,7 +347,9 @@ INK_AUTOQUIT=1 build/test-debug/bin/buttons_demo.exe    # 端到端：生成→�
 > `docs/CodeStyleRule.md`（编码与解耦规范）、`CXXCSS/CXXCSS.md`（配置格式），
 > 然后按「二、接下来做什么」的顺序推进。
 > **当前状态**：Button 从 json 到"窗口里一个能点的按钮"这条链路已经全通
-> （生成器 + 组件 + 指针派发 + 端到端示例，`ctest` 9 个用例全绿）。
-> 下一步二选一：**形状层的抗锯齿填充**（换掉
-> `include/ink/basic/InkingDraw.h` 的 `fillShapeBounds` 一个函数，圆角就真的圆了），
-> 或者**第 3 步的完整命中与三态**（现在是线性扫的最小闭环）。
+> （生成器为每个名字生成一个类 + 组件 + 指针派发 + 端到端示例，
+> `ctest` 9 个用例全绿）；**形状填充（含抗锯齿）也已完成**，圆角是真的圆。
+> 下一步建议：**第 3 步的完整命中与三态**（现在是线性扫的最小闭环），
+> 或 **T-2 的 Animation**；同一条形状线上只剩第二档形状
+> （`capsule` / `ring` / `line` / `polygon`）。
+> 更新的交接在看 `docs/TaskGuide.md` 的「交接现状」一节。

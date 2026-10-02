@@ -6,6 +6,11 @@
 //
 // 它是**构建期工具**：只依赖标准库（连 SDL 都不碰），所以在任何环境下都能编。
 // 产物只落 build 目录，源码树保持干净（docs/AGENTS.md §3 第 6 条）。
+//
+// 只生成**组件**（今天就是 Button）：配置烘成字面量、每个名字一个类，
+// 类型即名字，构造不查表。**场景不生成**——评估过，收益（组件不传 parent、
+// 场景名有编译期保险）用"成员 + 默认成员初始化器 `{this}`"和一行常量
+// 手写就能拿到，而生成它的代价是固定的（见 TaskGuide 的 T-7 那段记录）。
 
 #include "Cxxcss.h"
 #include "Emit.h"
@@ -104,9 +109,10 @@ int main(int argc, char** argv) {
     const inkgen::LoadResult loaded = inkgen::LoadButtonConfigs(inputs);
 
     for (const inkgen::ButtonConfig& button : loaded.buttons) {
-        std::printf("[配置] %s  %dx%d  shape=%d  显式外观段=%d\n",
+        std::printf("[配置] %s  %dx%d  %s  shape=%d  显式外观段=%d\n",
                     button.name.c_str(), button.data.width,
                     button.data.height,
+                    button.dynamic ? "动态" : "静态",
                     static_cast<int>(button.data.shape.kind),
                     (button.data.hoverInheritsNormal ? 1 : 2));
         for (const std::string& warning : button.warnings) {

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "ink/basic/InkingAnchor.h"
+#include "ink/ui/HitTable.h"
 #include "scene/SceneLibrary.h"
 #include "scene/SceneRegisterToken.h"
 
@@ -202,6 +203,81 @@ public:
     /** 标脏：骨架变了，绘制顺序需要重建。写入口内部已经调过。 */
     void NotifyStructureChanged() noexcept;
 
+    // ---------------- 标脏的统一消费（T-3） ----------------
+    //
+    // 三种脏的三个消费点，各管一段，别混：
+    //
+    //   1. **命中脏**（几何 / 可见性 / 层级 / 父子）→ 帧首。`sortDrawList()` 在
+    //      渲染之前把绘制列表重建好（将来命中表落地后，重烘表也在这里）。
+    //   2. **指针脏**             → 帧末（下面这个函数清）。指针一动"谁被指着"就可能变，
+    //      但**表不用重烘**——这是它必须和命中脏分开的原因，见 `SetPointerState`。
+    //   3. **重绘脏**（颜色 / 文字 / 变换）→ 帧末（下面这个函数记账 + 计时清零）。
+    //
+    // 为什么是"帧末统一消费"而不是"谁改谁立刻处理"：一帧里可能连着 Resize 三次、
+    // ChangeZIndex 两次，立刻处理就是重烘五次表；攒到帧末只处理一次
+    // （`docs/InputDesign.md` §5 的 isDirty 生命周期、TaskGuide T-4 那句"同一帧里
+    // 最后统一消费"）。
+
+    /**
+     * 帧末统一消费：由窗口层在主循环的收尾那一步调一次（**只对活跃场景**）。
+     *
+     * 它做两件事：推进每个节点的安静帧计数（够数就清脏），然后清掉指针脏。
+     * 它**不重建绘制列表**——那是帧首 `sortDrawList()` 的事；消费的语义是
+     * "这一帧的处理已经完成了，把账记上"，不是"立刻去做重活"。
+     *
+     * 静默 / 停放 / 关闭的场景不消费：它们的脏标记要留着，切回来时才有意义。
+     */
+    void ConsumeFrameDirty() noexcept;
+
+    /** 这一帧（上一次消费时）还有多少节点处于**重绘脏**——也就是"画面还在动"。 */
+    int GetRepaintingNodeCount() const noexcept;
+
+    /** 这一帧还有多少节点处于**命中脏**（要重算悬停 / 将来要重烘表）。 */
+    int GetHitDirtyNodeCount() const noexcept;
+
+    /**
+     * 指针脏：指针状态变过、这一帧的悬停判断还没做。
+     *
+     * 它**不代表命中表要重烘**——指针移动不改任何几何。把两者混在一起，
+     * 就会出现"鼠标一动就重烘整张表"（`docs/InputDesign.md` §5 把 isDirty
+     * 单列出来正是为了避开这个）。
+     */
+    bool IsPointerDirty() const noexcept;
+
+    // ---------------- 命中（T-4：烘焙表 + 三态） ----------------
+    //
+    // 形态照 `docs/InputDesign.md` §6 / §10：静态层查**烘焙好的表**（簇 + 格子 +
+    // CSR 候选），动态层自判（它不进表），两者按**全局 z 序**合并成三态。
+    //
+    // 两件事和设计稿不同，都是被现状决定的（写在这里免得下一个人以为漏了）：
+    //
+    //   - **没有溢出桶**（§10.5 规则 2）：那条规则是给"运行时新增的 UI 不在
+    //     生成期结构里"准备的。我们的组件**构造即登记进绘制列表**，而表是
+    //     跟着列表重建的——所以"新增"表现为"表脏了"，不是"表外还挂着条目"。
+    //   - **没有跨簇条目仲裁**（§10.5 规则 4）：那条规则是给**局部层级**
+    //     （堆叠上下文）准备的。我们的 z 序是全局一条（`InkingAnchor::IsAbove`，
+    //     §1 定的"规则只能有一条"），所以查表按全局 z 降序取第一个命中的就行。
+    //     索引层面一个条目会登记进多个簇（大面板横跨粗块），那只是为了查得到，
+    //     不涉及"谁在上面"的仲裁。**等真做堆叠上下文时，这两条都要补回来。**
+
+    /**
+     * 查一次命中：命中的最上面那个 + 三态。
+     *
+     * 坐标是**设计坐标**。悬停与点击共用它（§6）；点击不过脏标记，单独调一次。
+     *
+     * 返回的是**静态层与动态层合并之后**的答案：点在动态组件的洞里时，
+     * 会拿动态层最上面那个和静态结果比 z 序。
+     */
+    HitResult QueryHit(float designX, float designY) noexcept;
+
+    /** 命中表里有多少条静态条目 / 多少个簇 / 多少个格子（自检与预算估算用）。 */
+    std::size_t GetHitTableEntryCount() noexcept;
+    std::size_t GetHitTableClusterCount() noexcept;
+    std::size_t GetHitTableCellCount() noexcept;
+
+    /** 一次查询最多扫过多少候选（上界；用来判断格子尺寸定得是不是太粗）。 */
+    std::size_t GetHitTableMaxCellCandidates() noexcept;
+
     // ---------------- 骨架登记的写入口 ----------------
     //
     // 只由 InkingAnchor 的构造 / 析构 / SetParent 调用，别在业务代码里手工调。
@@ -231,6 +307,27 @@ public:
      */
     void SetPointerState(float designX, float designY, bool down,
                          bool inside) noexcept;
+
+    // ---------------- 指针状态的只读查询（给动态组件"自己拉"用） ----------------
+    //
+    // 静态组件的输入是**推**过去的（DispatchPointer 扫表之后调 MouseHover /
+    // MousePress），动态组件的输入是**拉**的：它不进表、也不被遍历，所以
+    // 每帧在自己的 Tick 里读这里的四个值，自己判命中、自己推三态
+    // （docs/InputDesign.md §7，用法见 InkingDynamicButton::JudgePointer）。
+    //
+    // 四个都只是"当前这一帧的状态"，不标脏、不改任何东西。
+
+    /// 指针的 x，设计坐标。
+    float GetPointerX() const noexcept;
+
+    /// 指针的 y，设计坐标。
+    float GetPointerY() const noexcept;
+
+    /// 左键按着没（**原始按键状态**，不折进"在不在窗口里"）。
+    bool IsPointerDown() const noexcept;
+
+    /// 指针在不在窗口里。窗口外不该继续悬停。
+    bool IsPointerInside() const noexcept;
 
     /**
      * 按当前指针状态派发一次：悬停进出、按下、抬起触发点击。
@@ -333,6 +430,24 @@ private:
     InkingAnchor* hitTestTopmost(float designX, float designY) noexcept;
 
     /**
+     * 重建命中表。由 `sortDrawList()` 在**真的重建了列表之后**调——
+     * 表与列表必须同生同灭：顺序或内容一变，候选的 z 序与包络就都过期了。
+     *
+     * 变换（平移 / 旋转 / 缩放）**不在**重建触发源里：表里存的是组件的
+     * **保守包络**（覆盖所有可能变换），精判用当前变换——所以表全程冻结
+     * （`docs/InputDesign.md` §11「变换通道不改表」）。
+     */
+    void rebuildHitTable();
+
+    /**
+     * 动态层最上面那个命中者（动态组件不进表，只能现问）。
+     *
+     * 只在"点落在某个动态洞里"时才会被调用——洞就是为省这一趟而存在的。
+     */
+    InkingAnchor* topmostDynamicHit(float designX, float designY,
+                                    HitKind& kind) noexcept;
+
+    /**
      * 绘制列表，按 z 升序（先画的在底下）。
      *
      * 析构顺序上有一件事要记住：本类析构体先跑（去摘子节点上的 `_scene`），
@@ -351,6 +466,15 @@ private:
     bool _orderDirty = true;
     /** 骨架结构变更次数，覆盖"内容"与"顺序"两类。 */
     std::uint64_t _structureGeneration = 0;
+
+    /**
+     * 烘焙好的命中表（静态条目 + 动态洞）。
+     *
+     * 与 `_drawList` **同生同灭**：`sortDrawList()` 真的重建列表时会顺手重建它
+     * （`rebuildHitTable()`）。没脏的时候一次都不碰——这正是"每帧 0 次重烘"
+     * 的来源（`InputDesign.md` §13）。
+     */
+    HitTable _hitTable;
 
     /** 正在渲染（由 SceneLibrary 维护，同期最多一个）。 */
     bool _active = false;
@@ -376,6 +500,23 @@ private:
      * 自检里建了又拆的场景会把上一帧的状态留给下一个（实测这种串味最难查）。
      */
     bool _pointerWasDown = false;
+
+    /**
+     * 指针脏：指针状态变过，这一帧的悬停判断还没做。
+     *
+     * 由 `SetPointerState` 在**真的变了**的时候置位（每帧都喂同一个坐标不算变），
+     * 帧末统一消费时清掉。T-4 的"每帧 query"就是拿它当开关。
+     */
+    bool _pointerDirty = false;
+
+    /**
+     * 上一次帧末消费时，还有多少节点各自处于脏状态。
+     *
+     * 纯观测值（自检与诊断用）：动画在跑的时候它应该一直 > 0，
+     * 动画停下 `kRepaintQuietFrames` 帧之后回落到 0——"画面稳了"就是这么看的。
+     */
+    int _repaintingNodeCount = 0;
+    int _hitDirtyNodeCount = 0;
 
     InkingAnchor* _hoveredNode = nullptr;  ///< 这一帧悬停在谁身上
     InkingAnchor* _pressedNode = nullptr;  ///< 按下去时抓的是谁（拖出按钮也还是它）

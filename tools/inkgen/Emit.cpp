@@ -138,6 +138,21 @@ std::string ButtonBody(const ButtonConfig& button, const std::string& indent) {
             out << indent << "data." << field << ".source = "
                 << Quote(value.source) << ";\n";
         }
+        // 过渡时长：进这个状态时用。0（没配）就不写，生成物干净一点。
+        if (value.transitionSeconds > 0.0f) {
+            out << indent << "data." << field << ".transitionSeconds = "
+                << Float(value.transitionSeconds) << ";\n";
+        }
+        // 变换：同样只在真配了的时候写。字段顺序就是 TransformSpec 的声明顺序
+        // （translateX / translateY / rotate / scale）——聚合初始化靠这个顺序，
+        // 写反了不会报错，只会静默地把 rotate 当成 scale。
+        if (!value.transform.IsIdentity()) {
+            out << indent << "data." << field << ".transform = ink::TransformSpec{"
+                << Float(value.transform.translateX) << ", "
+                << Float(value.transform.translateY) << ", "
+                << Float(value.transform.rotate) << ", "
+                << Float(value.transform.scale) << "};\n";
+        }
     };
 
     appearance("normal", data.normal);
@@ -207,26 +222,66 @@ std::string MakeHeader(const std::vector<ButtonConfig>& buttons,
     out << "// 来源：CXXCSS/Button/*.json\n";
     out << "// 改配置请改 json；改生成规则请改 tools/inkgen/Emit.cpp。\n";
     out << "#pragma once\n\n";
-    out << "#include <button/ButtonData.h>\n\n";
+    out << "#include <button/ButtonData.h>\n";
+    out << "#include <button/InkingDynamicButton.h>\n";
+    out << "#include <button/InkingStaticButton.h>\n\n";
     out << "#include <cstddef>\n\n";
     out << OpenNamespaces(parts);
-    out << "\n/// 每个按钮的查找键。写代码时用这些常量，拼错名字编译期就红。\n";
+    out << "\n// ---------------------------------------------------------------------------\n";
+    out << "// 每个按钮一个独立的类：数据直接烘在类里（不是运行期查表）\n";
+    out << "//\n";
+    out << "// 为什么不是\"名字 → 运行期查表\"：那样每个字段都要在运行期从一个共享表里取，\n";
+    out << "// 而且\"名字对但没登记\"这条路径只能靠静默退回默认值——那是个会藏 bug 的设计。\n";
+    out << "// 生成类之后：拼错名字编译期就红，配置\"取不到\"这件事在类型上不可能发生。\n";
+    out << "//\n";
+    out << "// 基类由 json 的 \"dynamic\" 决定（静态 / 动态是二选一）：\n";
+    out << "//   不写或 false → ink::InkingStaticButton（几何构造即定型，进命中表）\n";
+    out << "//   true         → ink::InkingDynamicButton（几何可运行期改，自己拉指针输入）\n";
+    out << "// ---------------------------------------------------------------------------\n";
 
     for (const ButtonConfig& button : buttons) {
         if (button.identifier.empty()) {
-            out << "// 名字 \"" << button.name
-                << "\" 不是合法标识符，没有生成常量；请用字符串字面量按名构造。\n";
+            out << "\n// 名字 \"" << button.name
+                << "\" 不是合法标识符，没法生成类名与常量；\n"
+                   "// 它会出现在 RegisterAllButtons() 里，只能按字符串名字使用。\n";
             continue;
         }
-        out << "inline constexpr const char* " << button.identifier << " = "
-            << Quote(button.name) << ";\n";
+
+        const char* const baseClass = button.dynamic
+                                          ? "ink::InkingDynamicButton"
+                                          : "ink::InkingStaticButton";
+        out << "\n/// " << button.name << "（来自 " << button.filePath
+            << (button.dynamic ? "，动态按钮" : "，静态按钮") << "）\n";
+        out << "class " << button.identifier << " : public " << baseClass
+            << " {\n";
+        out << "public:\n";
+        out << "    /// 查找键（= json 的 name 字段）。\n";
+        out << "    static constexpr const char* kName = " << Quote(button.name)
+            << ";\n\n";
+        out << "    explicit " << button.identifier
+            << "(ink::InkingAnchor* parent)\n";
+        out << "        : " << baseClass << "(parent, Data()) {}\n\n";
+        out << "    /**\n";
+        out << "     * 这份配置。值全是字面量，烘在构建产物里——\n";
+        out << "     * 没有查表、没有\"取不到就退回默认外观\"这条路。\n";
+        out << "     *\n";
+        out << "     * 函数内静态量：首次使用时才初始化，避开静态初始化 / 析构顺序问题\n";
+        out << "     * （docs/AGENTS.md §6 第 12 条）。内容全是常量，多线程读也安全。\n";
+        out << "     */\n";
+        out << "    static const ink::ButtonData& Data();\n\n";
+        out << "    /// 把这份配置登记进 ink::ButtonLibrary（给\"按名字查\"的用法）。\n";
+        out << "    static void Register();\n";
+        out << "};\n";
     }
 
-    out << "\n/// 本次生成里有多少个按钮配置。\n";
+    out << "\n/// 本次生成里有多少个按钮。\n";
     out << "inline constexpr std::size_t kButtonCount = " << buttons.size()
         << ";\n";
 
-    out << "\n/// 把本文件里的全部按钮配置登记进 ink::ButtonLibrary。\n";
+    out << "\n/// 把本次生成的全部按钮配置登记进 ink::ButtonLibrary。\n";
+    out << "///\n";
+    out << "/// **不是**按钮能用的前提——每个按钮类自己带着数据。这个入口是给\n";
+    out << "/// 「按名字查配置」那类用法准备的（自检、工具、将来运行期换皮肤）。\n";
     out << "/// 幂等：重复调用会先把上一次登记的这批撤下再重新登记。\n";
     out << "void RegisterAllButtons();\n";
 
@@ -244,16 +299,15 @@ std::string MakeSource(const std::vector<ButtonConfig>& buttons,
     out << "// 本文件由 inkgen 生成，不要手改。\n";
     out << "#include <" << options.headerName << ">\n\n";
     out << "#include <button/ButtonLibrary.h>\n\n";
-    out << "#include <vector>\n\n";
 
-    // ---- 每个按钮一个工厂函数（内部链接，不导出符号） ----
+    // ---- 每个按钮一个 Build()（内部链接，不导出符号） ----
     if (!buttons.empty()) {
         out << "namespace {\n\n";
         for (std::size_t i = 0; i < buttons.size(); ++i) {
             const ButtonConfig& button = buttons[i];
             out << "/// " << button.name << "（来自 " << button.filePath
                 << "）\n";
-            out << "ink::ButtonData Make" << i << "() {\n";
+            out << "ink::ButtonData Build" << i << "() {\n";
             out << ButtonBody(button, "    ");
             out << "}\n\n";
         }
@@ -261,28 +315,53 @@ std::string MakeSource(const std::vector<ButtonConfig>& buttons,
     }
 
     out << OpenNamespaces(parts);
+
+    // 每个按钮类：Data() 与 Register() 的定义。
+    for (std::size_t i = 0; i < buttons.size(); ++i) {
+        const ButtonConfig& button = buttons[i];
+        if (button.identifier.empty()) {
+            continue;
+        }
+        out << "\nconst ink::ButtonData& " << button.identifier
+            << "::Data() {\n";
+        out << "    static const ink::ButtonData data = Build" << i << "();\n";
+        out << "    return data;\n";
+        out << "}\n\n";
+        out << "void " << button.identifier << "::Register() {\n";
+        out << "    ink::ButtonLibrary::Register(Data());\n";
+        out << "}\n";
+    }
+
     out << "\nvoid RegisterAllButtons() {\n";
     out << "    // 先把上一批（同一个生成集合）撤下，再重新登记：这样重复调用、\n";
     out << "    // 运行期重建都不报 NameTaken，也不会碰到别的库内容。\n";
     out << "    ink::ButtonLibrary::BeginRegistrationBatch();\n\n";
-    out << "    std::vector<ink::ButtonData> configs;\n";
-    out << "    configs.reserve(kButtonCount);\n";
+    out << "    // 注意：**按钮能用不依赖这一步**。每个按钮类自己带着数据；\n";
+    out << "    // 这里只是把同一份配置也放进按名字查的表里。\n";
+
+    bool anyWithClass = false;
     for (std::size_t i = 0; i < buttons.size(); ++i) {
-        out << "    configs.push_back(Make" << i << "());\n";
+        const ButtonConfig& button = buttons[i];
+        if (button.identifier.empty()) {
+            out << "    {\n";
+            out << "        // 名字不是合法标识符，没有对应的类，只能在这里登记。\n";
+            out << "        ink::ButtonLibrary::Register(Build" << i << "());\n";
+            out << "    }\n";
+            continue;
+        }
+        out << "    " << button.identifier << "::Register();\n";
+        anyWithClass = true;
     }
-    out << "\n    for (const ink::ButtonData& config : configs) {\n";
-    out << "        ink::ButtonLibrary::Register(config);\n";
-    out << "    }\n\n";
-    out << "    ink::ButtonLibrary::EndRegistrationBatch();\n";
+    (void)anyWithClass;
+
+    out << "\n    ink::ButtonLibrary::EndRegistrationBatch();\n";
     out << "}\n";
 
     out << CloseNamespaces(parts);
     out << "\nnamespace {\n\n";
     out << "/**\n";
-    out << " * 启动期就把配置登记好。\n";
+    out << " * 启动期把同一份配置也登记进按名字查的表。\n";
     out << " *\n";
-    out << " * 为什么不靠\"第一次构造按钮时再登记\"：那要求每个构造函数都记得调一次，\n";
-    out << " * 漏一次就退化成\"按名字构造拿到默认外观\"——一个静默的错。\n";
     out << " * 依赖静态初始化顺序的写法在这里是**安全**的：库本身用函数内静态量，\n";
     out << " * 谁先碰它谁把它拉起来，所以这个对象的构造一定发生在库可用之后。\n";
     out << " */\n";

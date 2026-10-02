@@ -26,18 +26,27 @@
 //   - 静态组件没有几何写入口，拿到 `InkingAnchor*` 也改不了它的几何。
 //
 // 结论：三态外观 + 点击回调全部落在静态档，进命中表那条路就一直是通的。
-// 真要一个"按下会改变尺寸、会撑开布局"的按钮，那是另一个类型
-// （InkingDynamicButton），不要在这里加几何写入口把它变回动态。
+// 真要一个"按下会改变尺寸、会撑开布局"的按钮，那是另一个类型——它已经存在了：
+// `InkingDynamicButton`（include/button/InkingDynamicButton.h），几何可以运行期改，
+// 代价是不进命中表、指针由它自己在 Tick 里拉。**不要在这里加几何写入口**
+// 把静态按钮变回动态：`src/ink.cpp` 里有编译期断言钉着这条。
 //
 // ---------------------------------------------------------------------------
-// 状态是本组件自己的事，不是"每个按钮都要转发一遍鼠标"（设计要点，还没接线）
+// 三态外观与状态机是**静态 / 动态共用**的一份（include/button/ButtonLook.h）
+//
+// 两条路的输入方式不同（静态是场景派发喂、动态是自己拉），但"哪个状态配哪份
+// 外观""按下 > 悬停 > 通常"只允许有一份定义，所以挪进了 ButtonLook。
+// 本类只负责"什么时候把两个标志填进去"——那是场景派发的事。
+//
+// ---------------------------------------------------------------------------
+// 状态是本组件自己的事，不是"每个按钮都要转发一遍鼠标"
 //
 // 三态是**渲染状态**，所以状态机放在按钮里；命中判定走形状层同一份定义
 // （`ShapeContains`，见 GetShape），所以"画的是圆角、点到的是直角"不会发生。
 //
-// 现在窗口层还没有把鼠标事件接到场景上（命中与三态是 TempTask 第 3 步），
-// 所以对外提供的是**幂等的状态写入口**——谁拿到鼠标谁调，
-// 框架接线时调的就是这三个，不用改本类：
+// 对外提供的是**幂等的状态写入口**——谁拿到鼠标谁调。今天调它们的是
+// `InkingScene::DispatchPointer`（线性扫绘制列表，从最上面往下问 HitTest，
+// 然后推给按钮），所以业务代码一般不用自己调：
 //
 //     button.MouseHover(true/false);   // 指针进出
 //     button.MousePress(true);         // 按下
@@ -45,8 +54,12 @@
 //     button.TriggerClick();           // 抬起且仍在按钮内 → 回调
 //
 // 它们只换颜色、不标脏、也不通知场景——这正是"静态组件"该有的开销。
+//
+// 动态按钮（`InkingDynamicButton`）**没有**这三个入口：它的输入是自己从场景
+// 拉的（`JudgePointer`）。所以"输入与静态版不同"那句话，落到接口上就是
+// "一边有这三个推的入口、另一边只有一个拉的入口"。
 
-#include <button/ButtonData.h>
+#include <button/ButtonLook.h>
 #include <ink/basic/InkingAnchor.h>
 
 #include <cstdint>
@@ -55,20 +68,8 @@
 
 namespace ink {
 
-/// 按钮的三态。顺序即优先级：按下 > 悬停 > 通常。
-enum class ButtonState : std::uint8_t {
-    Normal = 0,  ///< 通常
-    Hover,       ///< 悬停
-    Pressed,     ///< 按下（配置里叫 onclicked）
-};
-
-/// 点击回调：不带参数、不返回值。
-///
-/// 原来写的是 `std::function<std::any()>`（任意返回值），这里收窄成 `void`：
-/// "按下之后要算出一个值" 不是按钮的职责——需要返回值就直接在 lambda 里捕获
-/// 外部状态，或者把它包成一个 Task 交给 TaskQueue。`std::any` 还会逼每个
-/// 调用点都去 `std::any_cast` 一个它根本不关心的东西。
-using ButtonClickCallback = std::function<void()>;
+/// 点击回调（`ButtonClickCallback`）与三态（`ButtonState`）都在 ButtonLook.h 里：
+/// 静态 / 动态两块按钮共用同一份定义，不能各写一套。
 
 class InkingStaticButton : public InkingStaticAnchor {
 public:
@@ -83,13 +84,16 @@ public:
     /**
      * 配置驱动构造：只给 parent + 名字，配置从 `ButtonLibrary` 里按名字取。
      *
-     * 代码生成器将来生成的代码就是"登记配置 + 用这个名字构造"。名字没登记时
-     * 会打一条警告并使用一份默认数据——按名字构造却什么都没登记，
-     * 十有八九是名字拼错了，静默给个空按钮比报错更难查。
+     * **它不是生成的按钮类走的路**：生成器为每个名字生成一个独立的类，
+     * 数据直接烘在类里（`ink::cxxcss::NormalButton` 之类），构造时不查任何表。
+     * 这条构造留着给"名字要到运行期才知道"的少数场景用。
+     *
+     * 名字没登记时：写一条**错误**日志，给一个空按钮（不画东西、不响应点击），
+     * 并让 `UnknownNameCount()` 加一。以前这里是"静默退回一份默认外观"——
+     * 按钮长得不对却没有任何报错，只能靠肉眼发现；现在它是错的、也是可断言的。
      *
      * 注意构造完之后**再去登记是不会生效的**：数据在构造时就拷进来了。
-     * 登记必须在所有按钮构造之前完成（生成器生成的登记代码跑在启动期，
-     * 天然满足）。
+     * 登记必须在所有按钮构造之前完成（生成代码里的启动期登记天然满足）。
      */
     InkingStaticButton(InkingAnchor* parent, const std::string& name);
 
@@ -100,6 +104,14 @@ public:
      * 按名字构造内部也走它，所以两者看到的永远是同一份数据。
      */
     static const ButtonData* FindData(const std::string& name);
+
+    /**
+     * 发生过多少次"按名字构造却查不到配置"。
+     *
+     * 每次发生都会写一条错误日志并给出一个空按钮。留这个计数是为了让这件事
+     * **可断言**——静默失败才有藏身处，能被断言的失败没有。
+     */
+    static int UnknownNameCount() noexcept;
 
     /**
      * 指针在这个位置上吗。坐标是**世界坐标（设计空间）**。
@@ -122,8 +134,36 @@ public:
     /// 形状定义：渲染 / 命中 / 包围盒三者都从它派生（见 InkingShapeSpec.h）。
     const ShapeSpec& GetShape() const noexcept;
 
-    /// 三态外观（按当前状态）；渲染取的就是这一份。
+    /**
+     * 三态外观（按当前状态）。注意它是**目标**那一份配置（json 里写的），
+     * 过渡进行中它与屏幕上正在显示的颜色不是一回事——要那个用 `GetDisplayColor()`。
+     */
     const ButtonAppearance& GetAppearance() const noexcept;
+
+    /**
+     * 现在**实际画出来**的颜色（0xAARRGGBB）。
+     *
+     * 没有过渡在跑时它等于当前状态那份配置的颜色；过渡进行中是插值出来的中间色。
+     * 渲染用的就是它，自检也拿它验证"过渡真的在跑"。
+     */
+    std::uint32_t GetDisplayColor() const noexcept;
+
+    /**
+     * 现在**实际生效**的变换（平移 / 旋转 / 缩放）。过渡进行中是插值出来的中间值。
+     *
+     * 绘制用它过正变换、命中用它过逆变换——自检拿它验证"几何动画真的在跑"，
+     * 以及"画的和点的是同一份变换"。
+     */
+    const TransformSpec& GetDisplayTransform() const noexcept;
+
+    /**
+     * 命中索引用的**保守包络**：三态变换的并集（`docs/InputDesign.md` §11）。
+     *
+     * 命中表的格子登记是**冻结**的，而按钮的变换会随三态变（悬停平移+放大、
+     * 按下下沉）——所以登记时必须盖住"所有可能的样子"，精判才用当前变换。
+     * 只按当前变换登记会漏命中：悬停那一帧按钮挪出去一点，边缘的点就落在表外了。
+     */
+    ShapeBounds GetHitEnvelope() const override;
 
     /// 指定某一个状态的外观。默认值来自配置里的 normal / hover / onclicked。
     const ButtonAppearance& GetAppearance(ButtonState state) const noexcept;
@@ -202,15 +242,26 @@ protected:
     /// 的默认实现，这里只换成"按形状的一笔"。
     void onRender(float pixelX, float pixelY) const override;
 
+    /**
+     * 每**渲染帧**一次：推进三态之间的颜色过渡。
+     *
+     * 静态按钮收不到 `InkingDynamicAnchor::Tick`（那是动态档的逻辑步），
+     * 所以颜色过渡走这条独立通道（`InkingAnchor::TickAnimation` →
+     * `InkingScene::TickFrame` 分发）。**它只改颜色，不碰几何**——这正是
+     * 静态按钮能一边有动画、一边继续待在"进命中表"那一档的原因。
+     */
+    void onAnimationTick(float deltaSeconds) override;
+
     /// 三态外观的选择。放 protected 而不是匿名函数里：派生类（例如将来的
     /// 圆角带描边的按钮）要复用同一套选择规则，不能各写一份。
+    /// 规则本体在 `ButtonLook::For`——这里只是个转发。
     const ButtonAppearance& appearanceFor(ButtonState state) const noexcept;
 
     /**
      * 按优先级从"指针在不在按钮里"和"按没按下"推出当前状态。
      *
-     * 做成静态函数（而不是成员）是为了让派生类也能拿来推自己的状态；
-     * 两个入参就是全部输入，没有隐藏状态。
+     * 规则本体在 `ButtonLook::Resolve`（静态 / 动态共用）；这里留一个转发，
+     * 是因为它以前就在这儿，派生类可能已经用上了。
      */
     static ButtonState ResolveState(bool hover, bool press) noexcept;
 
@@ -218,16 +269,17 @@ private:
     /// 把 data 里的字段搬到基类与自己的成员上；两个构造函数共用。
     void applyData(const ButtonData& data);
 
-    /// 按形状画填充色（设备像素）。
-    void renderShape(float pixelX, float pixelY) const;
+    /// 把 ButtonLook 里**当前显示**的颜色同步到基类那份 color：
+    /// 从基类窗口看颜色时读到的得是同一件事（本类重写了 onRender，用不到它，
+    /// 但一致性不能破）。过渡进行中同步的是插值出来的中间色。
+    void syncBaseColor() noexcept;
 
     /**
      * 画文字。
      *
      * **现在还不是真的文字**：文字渲染要字形图集 + 纹理层，属于 `text` 那段
-     * 尚未落地的工作。这里先按 fontSize / leftSpace / topSpace 占一块
-     * **同尺寸的方块**，好处是三个间距参数和"文字区域在哪儿"现在就能被自检
-     * 用像素钉住；等字形图集接上，把这个函数体换掉即可，调用点不用动。
+     * 尚未落地的工作。占位块的实现在 `src/button/ButtonPaint.cpp`，
+     * 静态 / 动态按钮共用同一份（等字形图集接上，换那一个函数体即可）。
      */
     void renderText(float pixelX, float pixelY) const;
 
@@ -236,20 +288,8 @@ private:
 
     ButtonData _data{};
 
-    /// 三态外观按状态展开存放，渲染时按当前状态直接取，
-    /// 不在每帧去 if-else 拼一遍。
-    ButtonAppearance _normal{};
-    ButtonAppearance _hover{};
-    ButtonAppearance _onclicked{};
-
-    ButtonState _state = ButtonState::Normal;
-
-    /// 指针现在在不在按钮里。它一直更新（即使正在按下）：
-    /// 抬起时"该回 Hover 还是 Normal"问的就是它。
-    bool _hovered = false;
-
-    /// 现在按着没。与 _hovered 分开存：拖拽时"按着"和"在里面"是两件事。
-    bool _pressed = false;
+    /// 三态外观 + 状态机（静态 / 动态共用的那一份，见 ButtonLook.h）。
+    ButtonLook _look{};
 
     ButtonClickCallback _onClicked{};
 };

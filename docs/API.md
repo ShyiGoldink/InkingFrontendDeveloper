@@ -438,20 +438,33 @@ SDL_BLENDMODE_BLEND)`）。SDL 的**绘制**混合默认是关的，那时颜色
 
 ## 代码生成器（inkgen）
 
-把 `CXXCSS/Button/*.json` 在**构建期**变成 C++ 代码：校验配置 → 生成
-"名字常量 + 登记入口"的头，以及"配置数据 + 启动期自动登记"的源文件。
+把 `CXXCSS/Button/*.json` 在**构建期**变成 C++ 代码：校验配置 →
+**为每个名字生成一个独立的按钮类**（配置烘在类里）+ 一个登记入口。
 使用方式很简单——配置列表交给 CMake，代码里 include 生成的头。
 （源码在 `tools/inkgen/`，只依赖标准库；改生成规则动那里。）
 >**产物**
 ```text
-build/<预设>/inkgen/<名字>/button_service.h     常量 + RegisterAllButtons() 声明
-build/<预设>/inkgen/<名字>/button_register.cpp  配置 + 启动期静态登记
+build/<预设>/inkgen/<名字>/button_service.h     每个按钮一个类 + 登记入口
+build/<预设>/inkgen/<名字>/button_register.cpp  配置字面量 + 启动期登记
 ```
-头文件里有：
-- `inline constexpr const char* k<按钮名>Name`（名字是合法标识符时才生成）；
-- `inline constexpr std::size_t kButtonCount`；
-- `void RegisterAllButtons();`（幂等：先撤下上一批、再重新登记）。
-源文件里有一个**启动期就位**的静态对象自动调它——调用方不需要记得手调任何东西。
+**每个名字一个独立的类**，配置直接烘在类里：
+```cpp
+class NormalButton : public ink::InkingStaticButton {
+public:
+    static constexpr const char* kName = "normalButton";
+    explicit NormalButton(ink::InkingAnchor* parent);   // 只要父级
+    static const ink::ButtonData& Data();               // 编译产物里的那份配置
+    static void Register();                             // 也登记进按名字查的表
+};
+```
+用起来就是 `ink::cxxcss::NormalButton _button{parent};`——比按名字构造少一个参数，
+因为配置就在类型里。
+>**为什么是类，不是"名字 → 运行期查表"**
+那样每个字段都要在运行期从共享表里取，而且"名字对但没登记"这条路径
+只能靠**静默退回一份默认外观**兜住——按钮长得不对，却没有任何报错。
+生成类之后：拼错名字等于**类型不存在**（编译期红），"配置取不到"在类型上
+不可能发生，每个按钮将来也才能各自特化（专属命中结构、专属动画）。
+至于"省下一次 `std::map` 查找"——那点开销不值一提，值钱的是**删掉一条静默失败路径**。
 >**产物只落 build 目录**（`docs/AGENTS.md §3` 第 6 条），源码树保持干净。
 >**CMake 一行接入**
 ```cmake
@@ -465,7 +478,7 @@ ink_add_generated(my_app
     SOURCES   ${MY_CONFIGS})
 ```
 之后在代码里直接 `#include <inkgen/my_app/button_service.h>`，
-用 `ink::cxxcss::k<名字>Name` 当查找键。
+用 `ink::cxxcss::<名字首字母大写>` 当类型、`::kName` 当字符串查找键。
 `*.example.json` 会被自动跳过（`CXXCSS.md §1`）；不传 SOURCES 会当场报错，
 省得"生成了一个空表"这种静默失败。
 >**inkgen 的命令行**
@@ -563,11 +576,16 @@ CXXCSS 里的 `"0|0|0|0.75"`（0~1 浮点、`|` 分隔）是**文件格式**，
 >**InkingStaticButton(parent, ButtonData);**
 手写数据构造：不走配置，直接给一份数据。
 >**InkingStaticButton(parent, "name");**
-配置驱动构造：只给 parent + 名字，配置从 `ButtonLibrary` 里按名字取
-（生成器将来生成的代码就是"往表里登记 + 用这个名字构造"）。
-名字没登记过会打一条警告并退回一份默认数据——按名字构造却什么都没登记，
-十有八九是名字拼错了，静默给个空按钮比报错更难查。
+配置驱动构造：只给 parent + 名字，配置从 `ButtonLibrary` 里按名字取。
+**这不是生成的按钮类走的路**——生成的类（`ink::cxxcss::NormalButton` 之类）
+数据烘在类里，构造时不查任何表。这条留给"名字要到运行期才知道"的少数场景。
+名字没登记时：写一条**错误**日志、给一个空按钮（不画东西、不响应点击），
+并让 `UnknownNameCount()` 加一（以前是静默退回一份默认外观——按钮长得不对
+却没有任何报错，只能靠肉眼发现）。
 **数据在构造时就拷进来了**：构造之后再登记不会生效。
+>**UnknownNameCount();**
+"按名字构造却查不到配置"发生过多少次。留这个计数是为了让这件事**可断言**——
+静默失败才有藏身处，能被断言的失败没有。
 >**[final] MouseHover(bool) / MousePress(bool) / MouseRelease();**
 三态状态机，**幂等**：只换颜色，不标脏、也不通知场景。
 优先级是**按下 > 悬停 > 通常**，`MousePress(false)` 按当前指针位置回到

@@ -193,6 +193,25 @@ void InkingScene::TickFrame(double deltaSeconds) {
     }
 
     onRenderBoundTick(deltaSeconds);
+
+    // 再把这一帧的真实 delta 分发给**所有**节点（静态也要）：
+    // 颜色 / 透明度过渡不该因为"几何不变"就收不到帧——那正是静态档的代价边界。
+    // 动态档的几何推进走的是另一条（`TickLogic` 的固定逻辑步），两者别混。
+    //
+    // 复制一份指针再遍历：回调里可能增删节点（构造 / 析构会改 _drawList），
+    // 拿着引用边遍历边改就是悬垂——和 TickLogic 那边同一个理由。
+    std::vector<InkingAnchor*> nodes;
+    nodes.reserve(_drawList.size());
+    for (const DrawItem& item : _drawList) {
+        if (item.node != nullptr) {
+            nodes.push_back(item.node);
+        }
+    }
+
+    const float delta = static_cast<float>(deltaSeconds);
+    for (InkingAnchor* node : nodes) {
+        node->TickAnimation(delta);
+    }
 }
 
 void InkingScene::onTick(double /*fixedStepSeconds*/) {}
@@ -221,9 +240,12 @@ void InkingScene::SetActiveFromLibrary(bool active) noexcept {
 // ---------------------------------------------------------------------------
 
 AnchorData InkingScene::sceneRootAnchorData() {
-    // 场景不做布局变化，但第一次渲染总要有对齐的锚点：先按设计画布定型
-    // （自身左上角对上窗口左上角）。将来由 CXXCSS 配置
-    // （CXXCSS/Scene/<场景名>.json）驱动时，改的就是这里。
+    // 场景不做布局变化，但第一次渲染总要有对齐的锚点：按设计画布定型
+    // （自身左上角对上窗口左上角）。
+    //
+    // 这里**不会**改成"由 CXXCSS/Scene/*.json 驱动"：场景不交给生成器
+    // （评估结论见 CXXCSS/CXXCSS.md §7.2）。尺寸跟随窗口、锚点按设计画布，
+    // 就是它该有的样子，没有可配的东西。
     AnchorData data;
     data.width  = inking::kDesignWidth;
     data.height = inking::kDesignHeight;
@@ -235,6 +257,48 @@ void InkingScene::NotifyStructureChanged() noexcept {
     _contentDirty = true;
     _orderDirty = true;
     ++_structureGeneration;
+}
+
+void InkingScene::ConsumeFrameDirty() noexcept {
+    // 停放 / 关闭的场景不消费：它们的脏要留着，切回来时才有意义。
+    if (_rejected || _closed) {
+        return;
+    }
+
+    // 节点那一半：推进安静帧计数（够数就清脏）。直接在绘制列表上走一遍——
+    // 每节点一次 bool 读，几十个节点可以忽略；换"维护一张脏节点表"反而要处理
+    // 去重（同一节点一帧可能标脏很多次），得不偿失。
+    _repaintingNodeCount = 0;
+    _hitDirtyNodeCount = 0;
+    for (const DrawItem& item : _drawList) {
+        InkingAnchor* node = item.node;
+        if (node == nullptr) {
+            continue;
+        }
+        node->ConsumeDirtyFrame();
+        // 统计的是"消费之后**仍**处于脏状态"的节点数，也就是"画面还在动"。
+        if (node->IsRepaintDirty()) {
+            ++_repaintingNodeCount;
+        }
+        if (node->IsDirty()) {
+            ++_hitDirtyNodeCount;
+        }
+    }
+
+    // 指针那一半：这一帧的悬停判断已经做过了（T-4 起由 query 消费）。
+    _pointerDirty = false;
+}
+
+int InkingScene::GetRepaintingNodeCount() const noexcept {
+    return _repaintingNodeCount;
+}
+
+int InkingScene::GetHitDirtyNodeCount() const noexcept {
+    return _hitDirtyNodeCount;
+}
+
+bool InkingScene::IsPointerDirty() const noexcept {
+    return _pointerDirty;
 }
 
 void InkingScene::AddDrawNode(InkingAnchor* node) noexcept {
@@ -355,6 +419,14 @@ void InkingScene::sortDrawList() {
 
     _contentDirty = false;
     _orderDirty = false;
+
+    // 表与列表**同生同灭**：内容或顺序一变，候选项的 z 序与包络就都过期了。
+    // 时机也正合设计——这里是"帧首重建一次"的落点，而 Render / BuildDrawList /
+    // QueryHit 都会先推一次 sortDrawList，所以谁先来拿到的都是最新的表。
+    //
+    // **变换不在这里**：组件上报的是"所有可能变换"的保守包络（它不动），
+    // 精判用当前变换。所以动画期间表一次都不用重建（§11「变换通道不改表」）。
+    rebuildHitTable();
 }
 
 // ---------------------------------------------------------------------------
@@ -363,14 +435,39 @@ void InkingScene::sortDrawList() {
 
 void InkingScene::SetPointerState(float designX, float designY, bool down,
                                   bool inside) noexcept {
+    // 只有**真的变了**才算指针脏：窗口层每帧都喂一次（哪怕鼠标没动），
+    // 不判一下的话"每帧都脏"就等于这个标记永远是摆设。
+    const bool moved = (designX != _pointerX) || (designY != _pointerY)
+        || (down != _pointerDown) || (inside != _pointerInside);
+
     _pointerX = designX;
     _pointerY = designY;
     _pointerDown = down;
     _pointerInside = inside;
+
+    if (moved) {
+        _pointerDirty = true;
+    }
 }
 
 InkingAnchor* InkingScene::GetPressedNode() const noexcept {
     return _pressedNode;
+}
+
+float InkingScene::GetPointerX() const noexcept {
+    return _pointerX;
+}
+
+float InkingScene::GetPointerY() const noexcept {
+    return _pointerY;
+}
+
+bool InkingScene::IsPointerDown() const noexcept {
+    return _pointerDown;
+}
+
+bool InkingScene::IsPointerInside() const noexcept {
+    return _pointerInside;
 }
 
 InkingAnchor* InkingScene::GetHoveredNode() const noexcept {
@@ -382,6 +479,10 @@ InkingAnchor* InkingScene::hitTestTopmost(float designX,
     // 从列表**尾部**往前问：列表按 z 升序排（先画的在底下），所以尾部是最上面。
     // 第一个命中的就是答案——这条顺序规则和渲染的提交顺序同源，
     // 不会出现"画的是 A、点到的是 B"。
+    //
+    // **这是参考实现**：正式路径走烘焙表（`QueryHit`）。留它是因为自检要拿
+    // "逐点对账"钉住两者同答案——一条规则两种实现，只有在它们互相印证时
+    // 才敢说"换实现没换语义"。
     for (std::size_t i = _drawList.size(); i > 0; --i) {
         InkingAnchor* node = _drawList[i - 1].node;
         if (node == nullptr) {
@@ -397,6 +498,135 @@ InkingAnchor* InkingScene::hitTestTopmost(float designX,
         }
     }
     return nullptr;
+}
+
+void InkingScene::rebuildHitTable() {
+    _hitTable.Clear();
+
+    for (const DrawItem& item : _drawList) {
+        InkingAnchor* node = item.node;
+        if (node == nullptr) {
+            continue;
+        }
+
+        // 隐藏的组件：**既不进表、也不留洞**——渲染那边也是提交时跳过它，
+        // 两边必须同一个答案（"隐藏的还能点到"是最容易出的那种不一致）。
+        if (!node->IsVisibleInTree()) {
+            continue;
+        }
+
+        // 包络是组件按"自己的形状 + 所有可能的变换"上报的（本地坐标），
+        // 这里补上绝对位置。静态节点用列表里的快照，动态节点现算
+        // （它每帧都在动，快照已经过期）。
+        ShapeBounds envelope = node->GetHitEnvelope();
+        if (node->IsDynamic()) {
+            envelope.x += node->GetAbsX();
+            envelope.y += node->GetAbsY();
+        } else {
+            envelope.x += item.absX;
+            envelope.y += item.absY;
+        }
+
+        if (node->IsDynamic()) {
+            // 动态组件**不进表**（它自己判命中、自己维护状态，§7），
+            // 但它占的地方要记成"洞"：点不在任何洞里，就不必再去问动态层
+            // （§10.5 规则 3）。洞只是性能开关——正确性由 QueryHit 里的
+            // z 序合并保证，所以洞少登一个也只是多问一次，不会点错。
+            _hitTable.AddHole(envelope);
+            continue;
+        }
+
+        _hitTable.AddEntry(node, envelope, node->IsHitPassThrough());
+    }
+
+    _hitTable.Build();
+}
+
+InkingAnchor* InkingScene::topmostDynamicHit(float designX, float designY,
+                                             HitKind& kind) noexcept {
+    // 从列表尾部往前（z 由高到低），和渲染顺序同源。动态组件通常只有几个，
+    // 而且只有"点落在洞里"时才会走到这里。
+    InkingAnchor* passTarget = nullptr;
+    for (std::size_t i = _drawList.size(); i > 0; --i) {
+        InkingAnchor* node = _drawList[i - 1].node;
+        if (node == nullptr || !node->IsDynamic()) {
+            continue;
+        }
+        if (!node->IsVisibleInTree()) {
+            continue;
+        }
+        if (!node->HitTest(designX, designY)) {
+            continue;
+        }
+        if (node->IsHitPassThrough()) {
+            // 让过：记下最上面那个，继续往下找 Block（和静态层同一套三态规则）。
+            if (passTarget == nullptr) {
+                passTarget = node;
+            }
+            continue;
+        }
+        kind = HitKind::Block;
+        return node;
+    }
+
+    if (passTarget != nullptr) {
+        kind = HitKind::PassThrough;
+        return passTarget;
+    }
+    kind = HitKind::Miss;
+    return nullptr;
+}
+
+HitResult InkingScene::QueryHit(float designX, float designY) noexcept {
+    // 用之前保证表是新的。表跟着绘制列表一起重建（`sortDrawList` 里），
+    // 所以这里只推一次列表的脏。
+    sortDrawList();
+
+    bool inHole = false;
+    const HitResult staticResult = _hitTable.Query(designX, designY, &inHole);
+
+    // 点不在任何动态洞里 → 静态表的答案就是最终答案，动态层一次都不用问。
+    // 这就是"洞"的全部价值（§13：`isDirty == false` 时每帧 0 次 query 的加强版——
+    // 哪怕在查，也常常是一次表查询就结束）。
+    if (!inHole) {
+        return staticResult;
+    }
+
+    HitKind dynamicKind = HitKind::Miss;
+    InkingAnchor* dynamicHit = topmostDynamicHit(designX, designY, dynamicKind);
+    if (dynamicHit == nullptr) {
+        return staticResult;
+    }
+
+    // 静态与动态**按全局 z 序合并**（§6）。动态组件压在静态组件上面时，
+    // 静态表仍会算出它自己那一份答案，所以这一步不能省。
+    if (staticResult.target == nullptr
+        || InkingAnchor::IsAbove(*dynamicHit, *staticResult.target)) {
+        return HitResult{dynamicKind, dynamicHit};
+    }
+    return staticResult;
+}
+
+std::size_t InkingScene::GetHitTableEntryCount() noexcept {
+    // 和 BuildDrawList 一样先推一次脏：表的生命周期挂在列表上，
+    // 不推的话"刚建的节点还没进表"——调用方看到 0 会以为表坏了。
+    sortDrawList();
+    return _hitTable.GetEntryCount();
+}
+
+std::size_t InkingScene::GetHitTableClusterCount() noexcept {
+    sortDrawList();
+    return _hitTable.GetClusterCount();
+}
+
+std::size_t InkingScene::GetHitTableCellCount() noexcept {
+    sortDrawList();
+    return _hitTable.GetCellCount();
+}
+
+std::size_t InkingScene::GetHitTableMaxCellCandidates() noexcept {
+    sortDrawList();
+    return _hitTable.GetMaxCellCandidates();
 }
 
 void InkingScene::DispatchPointer() {
@@ -418,8 +648,12 @@ void InkingScene::DispatchPointer() {
     };
 
     // ---- 1. 悬停 ----
-    InkingAnchor* topmost =
-        _pointerInside ? hitTestTopmost(_pointerX, _pointerY) : nullptr;
+    // 命中走**烘焙好的表**（T-4）：静态层查表，动态层自判，
+    // 两者按全局 z 序合并（`QueryHit` 里做的事）。
+    // 这一步的**语义与之前完全一样**——换的是实现，不是规则。
+    const HitResult hit =
+        _pointerInside ? QueryHit(_pointerX, _pointerY) : HitResult{};
+    InkingAnchor* topmost = hit.IsHit() ? hit.target : nullptr;
 
     // 先让"不再被悬停的"退出。要处理两个：
     //   - 上一帧悬停、这一帧不在它身上了；

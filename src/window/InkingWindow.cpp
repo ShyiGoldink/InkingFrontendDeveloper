@@ -359,6 +359,13 @@ void runLoop(WindowState& s, MouseInput& mouse, InkingWindow& window) {
 
         // 5. 帧末收尾：瞬时状态一帧只清一次。放在这里而不是事件循环里，
         //    否则一帧里的多个移动事件会被后一个清掉。
+        //
+        //    场景的脏标记也在这里**统一消费**（T-3）：一帧里可能连着标了很多次，
+        //    攒到最后只处理这一回。只消费**活跃**场景——静默 / 停放 / 已关闭的
+        //    场景脏要留着，切回来时才有意义。
+        if (InkingScene* scene = SceneLibrary::GetActiveScene()) {
+            scene->ConsumeFrameDirty();
+        }
         mouse.ResetFrameFlags();
 
         // 6. 节流。接了 vsync 就交给 SDL（它会阻塞到下一次垂直回扫），

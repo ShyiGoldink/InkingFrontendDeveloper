@@ -76,15 +76,19 @@ include(cmake/SDL3_ttf.cmake)
 # ---------------------------------------------------------------------------
 set(INK_CORE_SOURCES
     src/ink/basic/InkingAnchor.cpp
+    src/ink/basic/InkingDraw.cpp
     src/ink/basic/Timeline.cpp
     src/ink.cpp
     src/ink/thread/ThreadPool.cpp
     src/ink/thread/TaskQueue.cpp
+    src/ink/ui/HitTable.cpp
     src/input/MouseInput.cpp
     src/scene/InkingScene.cpp
     src/scene/SceneLibrary.cpp
     src/window/InkingWindow.cpp
     src/button/ButtonLibrary.cpp
+    src/button/ButtonPaint.cpp
+    src/button/InkingDynamicButton.cpp
     src/button/InkingStaticButton.cpp)
 
 # 日志实现只在 ISLOG 打开时才参与编译；
@@ -262,14 +266,24 @@ if(INK_BUILD_EXAMPLES)
     add_subdirectory(examples/overlap)
 endif()
 
-# CXXCSS 驱动的示例：它是"配置 → 代码 → 窗口"这条链路的集成自检，
+# CXXCSS 驱动的示例：它们是"配置 → 代码 → 窗口"这条链路的集成自检，
 # 所以只开测试（INK_BUILD_EXAMPLES=OFF）时也要编——test-debug 预设就是这种组合，
 # 不这么写的话集成自检在测试预设里根本不存在。
+#
+#   buttons_demo：手写场景 + **按钮**由生成器产出（外加一堆离屏像素自检）
+#   scene_demo  ：同一件事的最小形态——场景 5 行，演示"一行构造整个界面"
 if(INK_BUILD_EXAMPLES OR INK_BUILD_TESTS)
     add_subdirectory(examples/buttons_demo)
+    add_subdirectory(examples/scene_demo)
 endif()
 
 if(INK_BUILD_TESTS)
+    # T-6 的验收：按任务编号把 T-1…T-5 的核心契约串一遍（不建渲染器，很快）。
+    add_executable(ink_acceptance_test tests/test_acceptance.cpp)
+    target_link_libraries(ink_acceptance_test PRIVATE ink::core)
+    target_compile_features(ink_acceptance_test PRIVATE cxx_std_20)
+    add_test(NAME ink_acceptance_test COMMAND ink_acceptance_test)
+
     add_executable(ink_test tests/test_main.cpp)
     target_link_libraries(ink_test PRIVATE ink::core)
     target_compile_features(ink_test PRIVATE cxx_std_20)

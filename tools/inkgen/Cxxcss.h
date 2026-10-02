@@ -36,7 +36,26 @@ struct CxxcssError {
 struct ButtonConfig {
     std::string filePath;          ///< 来源文件，报错和日志要用
     std::string name;              ///< 配置里的 name（= ButtonLibrary 的查找键）
-    std::string identifier;        ///< name 能当 C++ 标识符时给出（否则为空）
+    /**
+     * 生成出来的**类名**（`normalButton` → `NormalButton`）。
+     *
+     * name 不是合法 C++ 标识符时为空——那时生成不出类，只能按字符串名字使用。
+     * 类名同时是"这个按钮的类型"和"拼错名字的编译期保险"：
+     * 数据烘在类里，没有运行期查表。
+     */
+    std::string identifier;
+    /**
+     * 生成成**动态**按钮吗（json 里的 `"dynamic": true`）。
+     *
+     * 这一点只决定"生成出来的类继承谁"：静态继承 `ink::InkingStaticButton`、
+     * 动态继承 `ink::InkingDynamicButton`（几何可以在运行期改，代价是不进命中表，
+     * 指针由它自己在 Tick 里拉——见 include/button/InkingDynamicButton.h）。
+     *
+     * 它**不进运行期那份数据结构**（`ink::ButtonData` 里没有这个字段）：
+     * 类型本身已经说明了它属于哪一档，再存一遍就是第二份真相，
+     * 而第二份真相迟早会和第一份不一致。
+     */
+    bool dynamic = false;
     ink::ButtonData data{};        ///< 运行期那份配置
 
     /// 非致命提醒（例如 `img` / `svg` 还没落地）。不算错误，但必须让用户看见。

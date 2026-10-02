@@ -81,4 +81,31 @@ inline RgbaFloat ToUnitRgba(std::uint32_t color) {
                      byteChannelToUnit(ColorAlpha(color))};
 }
 
+/**
+ * @brief 两个 0xAARRGGBB 之间**逐通道**（含 alpha）线性插值。
+ *
+ * @param t 0 返回 `from`，1 返回 `to`，中间按比例混；超出会被夹到 [0,1]。
+ *
+ * 三态过渡（`ButtonLook::Advance`）就靠它。两个刻意的选择：
+ *
+ * 1. **逐通道**，不是"先混 rgb 再混 alpha"：三态之间往往只差透明度，
+ *    逐通道插值对那种情况就是纯 alpha 渐变，不会顺手改动色相。
+ * 2. **在 sRGB 空间直接插**（不做 gamma 校正）：CSS 的默认过渡也是这个口径，
+ *    而按钮三态本来就在同一套色里挪 alpha / 亮度，观感上没有差别；
+ *    要做"感知均匀"就得换颜色空间，那是样式层的事。
+ */
+inline std::uint32_t MixColor(std::uint32_t from, std::uint32_t to, float t) {
+    const float k = std::clamp(t, 0.0f, 1.0f);
+    const auto mix = [k](std::uint8_t a, std::uint8_t b) -> std::uint8_t {
+        // 结果一定落在 [a,b] 里，+0.5 是四舍五入，不会溢出。
+        return static_cast<std::uint8_t>(
+            static_cast<float>(a)
+            + (static_cast<float>(b) - static_cast<float>(a)) * k + 0.5f);
+    };
+    return MakeColor(mix(ColorRed(from), ColorRed(to)),
+                     mix(ColorGreen(from), ColorGreen(to)),
+                     mix(ColorBlue(from), ColorBlue(to)),
+                     mix(ColorAlpha(from), ColorAlpha(to)));
+}
+
 }  // namespace ink

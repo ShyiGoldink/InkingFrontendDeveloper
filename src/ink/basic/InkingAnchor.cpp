@@ -44,16 +44,17 @@ int clampZIndex(int zIndex) {
  *
  * 静态档和动态档共用这一份，所以放在自由函数里——两者是兄弟关系
  * （都直接继承 InkingAnchor），静态版不是动态版的基类，借不到对方的实现。
- * SDF 形状层接手后换掉这一个函数即可。
+ *
+ * 它走的是**同一套形状填充**（`detail::fillShape`）：
+ * "矩形"在这里就是 `ShapeSpec::Rect()`，变换是单位变换（基类没有变换这个概念，
+ * 变换属于"组件怎么摆"的知识，归组件自己），于是填充只有一份实现，
+ * 抗锯齿、展示倍率换算这些事也不会出现"按钮走一条路、默认矩形走另一条路"。
+ * 基类依然不认识形状——形状是组件自己的事，这里只是选了最朴素的那一种。
  */
 void drawDefaultRect(const InkingAnchor& node, float pixelX, float pixelY) {
-    const float scale = magnify(node);
-    // 基类不认识形状（形状是组件自己的事），所以默认这一笔就是整个矩形。
-    const ShapeBounds bounds{0.0f, 0.0f,
-                             static_cast<float>(node.GetWidth()) * scale,
-                             static_cast<float>(node.GetHeight()) * scale};
-    detail::fillShapeBounds(detail::currentRenderer(), bounds, pixelX, pixelY,
-                            node.GetColor());
+    detail::fillShape(detail::currentRenderer(), ShapeSpec::Rect(),
+                      node.GetWidth(), node.GetHeight(), magnify(node), pixelX,
+                      pixelY, TransformSpec{}, node.GetColor());
 }
 
 }  // namespace
@@ -218,6 +219,36 @@ bool InkingAnchor::IsDirty() const noexcept {
 
 void InkingAnchor::ClearDirty() noexcept {
     _dirty = false;
+    _hitQuietFrames = 0;
+}
+
+bool InkingAnchor::IsRepaintDirty() const noexcept {
+    return _repaintDirty;
+}
+
+void InkingAnchor::ClearRepaintDirty() noexcept {
+    _repaintDirty = false;
+    _repaintQuietFrames = 0;
+}
+
+void InkingAnchor::ConsumeDirtyFrame() noexcept {
+    // 帧末统一消费的**节点那一半**：只推进计时，不清"刚标过的"。
+    // 顺序很关键——先把计数加一再看够不够，于是"标脏那一帧"算第 1 帧安静，
+    // 连续 kXxxQuietFrames 帧没有新脏才清。
+    if (_repaintDirty) {
+        ++_repaintQuietFrames;
+        if (_repaintQuietFrames >= kRepaintQuietFrames) {
+            _repaintDirty = false;
+            _repaintQuietFrames = 0;
+        }
+    }
+    if (_dirty) {
+        ++_hitQuietFrames;
+        if (_hitQuietFrames >= kHitQuietFrames) {
+            _dirty = false;
+            _hitQuietFrames = 0;
+        }
+    }
 }
 
 bool InkingAnchor::IsSceneRoot() const noexcept {
@@ -237,6 +268,25 @@ bool InkingAnchor::HitTest(float /*worldX*/, float /*worldY*/) const {
     // 基类不回答：它不可实例化，也没有形状。具体组件按自己的形状判定
     // （按钮走 ShapeContains，和渲染共用同一份定义）。
     return false;
+}
+
+ShapeBounds InkingAnchor::GetHitEnvelope() const {
+    // 保守默认：整块矩形。基类不认识形状（形状是组件的事），而包络给大了
+    // 只是候选多几个、不会误命中，所以这里宁可保守。
+    ShapeBounds bounds;
+    bounds.x = 0.0f;
+    bounds.y = 0.0f;
+    bounds.width = static_cast<float>(_width);
+    bounds.height = static_cast<float>(_height);
+    return bounds;
+}
+
+void InkingAnchor::SetHitPassThrough(bool passThrough) noexcept {
+    _hitPassThrough = passThrough;
+}
+
+bool InkingAnchor::IsHitPassThrough() const noexcept {
+    return _hitPassThrough;
 }
 
 InkingScene* InkingAnchor::GetSceneAncestor() noexcept {
@@ -267,7 +317,27 @@ bool InkingAnchor::IsAbove(const InkingAnchor& a,
 
 void InkingAnchor::MarkDirty() noexcept {
     _dirty = true;
+    // 新脏一到，安静帧计数归零：清脏看的是"**连续**多少帧没有新脏"。
+    _hitQuietFrames = 0;
     onDirty();
+}
+
+void InkingAnchor::MarkRepaintDirty() noexcept {
+    _repaintDirty = true;
+    _repaintQuietFrames = 0;
+}
+
+void InkingAnchor::MarkStructureChanged() noexcept {
+    // 骨架一变，三件事同时成立：
+    //   1. 命中结果可能变（几何 / 顺序 / 可见性都影响）→ 命中脏；
+    //   2. 画面一定变 → 重绘脏；
+    //   3. 绘制列表里缓存的绝对坐标快照过期 → 通知场景重排。
+    //
+    // 第 3 条只在**真的改了**的时候才该发生，所以写入口都是"先判有没有变、
+    // 变了才调这里"，而不是反过来（`Resize` 传同一个尺寸必须什么都不做）。
+    MarkDirty();
+    MarkRepaintDirty();
+    NotifySceneStructureChanged();
 }
 
 void InkingAnchor::NotifySceneStructureChanged() noexcept {
@@ -339,11 +409,10 @@ bool InkingDynamicAnchor::Resize(int width, int height) noexcept {
         _height = height;
     }
 
-    MarkDirty();
-    // 几何变了，绘制列表里缓存的绝对坐标就过期了，得让场景重算。
-    // 这就是"父级一动，静态子节点的缓存绝对坐标会过期"那条：动态节点自己
-    // 每帧现算没问题，但**它的静态子孙**靠的是列表里的快照。
-    NotifySceneStructureChanged();
+    // 几何变了：命中脏 + 重绘脏 + 让场景重算（绘制列表里缓存的绝对坐标过期了）。
+    // 最后那条正是"父级一动，静态子节点的缓存绝对坐标会过期"：
+    // 动态节点自己每帧现算没问题，但**它的静态子孙**靠的是列表里的快照。
+    MarkStructureChanged();
     onSizeChanged();
     return true;
 }
@@ -353,8 +422,7 @@ bool InkingDynamicAnchor::ChangeSelfAnchor(const Anchor& anchor) noexcept {
         return false;
     }
     _selfAnchor = anchor;
-    MarkDirty();
-    NotifySceneStructureChanged();
+    MarkStructureChanged();
     onSelfAnchorChanged();
     return true;
 }
@@ -364,8 +432,7 @@ bool InkingDynamicAnchor::ChangeTraceAnchor(const Anchor& anchor) noexcept {
         return false;
     }
     _traceAnchor = anchor;
-    MarkDirty();
-    NotifySceneStructureChanged();
+    MarkStructureChanged();
     onTraceAnchorChanged();
     return true;
 }
@@ -376,8 +443,7 @@ bool InkingDynamicAnchor::ChangeOffset(float offsetX, float offsetY) noexcept {
     }
     _offsetX = offsetX;
     _offsetY = offsetY;
-    MarkDirty();
-    NotifySceneStructureChanged();
+    MarkStructureChanged();
     onOffsetChanged();
     return true;
 }
@@ -393,8 +459,7 @@ bool InkingAnchor::SetVisible(bool visible) noexcept {
     _visible = visible;
     // 可见性是要标脏的四件事之一；它同时改变绘制列表的内容，
     // 所以还要通知场景重排（场景在重建时会把隐藏子树整个摘掉）。
-    MarkDirty();
-    NotifySceneStructureChanged();
+    MarkStructureChanged();
     onVisibleChanged(visible);
     return true;
 }
@@ -406,8 +471,8 @@ bool InkingAnchor::ChangeZIndex(int zIndex) noexcept {
         return false;
     }
     _zIndex = clamped;
-    MarkDirty();
-    NotifySceneStructureChanged();  // 顺序变了，但列表内容没变
+    // 顺序变了（列表内容没变，但是"谁盖谁"和命中顺序都变了）→ 骨架变化。
+    MarkStructureChanged();
     onZIndexChanged(clamped);
     return true;
 }
@@ -425,7 +490,10 @@ bool InkingAnchor::SetParent(InkingAnchor* parent) noexcept {
     _parent = parent;
     RegisterToScene(GetSceneAncestor());
 
-    MarkDirty();
+    // 换父级可能跨场景，位置也跟着变——骨架变化里最重的一种。
+    // （上面两步的摘除 / 登记已经各自通知过场景了，这里再走一次统一出口，
+    //  把命中脏与重绘脏也一起标上，免得"只通知了场景、没标脏"。）
+    MarkStructureChanged();
     onParentChanged(parent);
     return true;
 }
@@ -449,6 +517,11 @@ void InkingAnchor::onZIndexChanged(int /*zIndex*/) {}
 void InkingAnchor::onParentChanged(InkingAnchor* /*parent*/) {}
 void InkingAnchor::onVisibleChanged(bool /*visible*/) {}
 void InkingAnchor::onDirty() {}
+
+void InkingAnchor::onAnimationTick(float /*deltaSeconds*/) {
+    // 基类没有动画：几何变化归动态档的 Tick，颜色过渡归各组件自己。
+    // 留这个空实现是为了让"每渲染帧一次"这条通道两档都能走。
+}
 
 void InkingAnchor::onRender(float /*pixelX*/, float /*pixelY*/) const {
     // 基类不画：具体画什么由两个具体锚点或它们的子类决定。

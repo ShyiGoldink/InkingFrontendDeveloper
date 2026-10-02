@@ -1,0 +1,51 @@
+{
+    "$comment": [
+        "一个真实配置：CXXCSS/Button/dynamicTestButton.json —— **动态按钮**。",
+        "",
+        "\"dynamic\": true 让 inkgen 把生成的类挂到 ink::InkingDynamicButton 上",
+        "（不写或 false 就是 ink::InkingStaticButton）。两档的判据只有一条：",
+        "**几何会不会在构造之后自己变**。",
+        "  静态：没有几何写入口，几何构造即定型 → 能进命中表；三态只换颜色。",
+        "  动态：有 Resize / ChangeSelfAnchor / ChangeTraceAnchor / ChangeOffset",
+        "        → 不进命中表，自己维护命中状态，每帧收一次 Tick。",
+        "",
+        "输入也不同（T-1 的正文）：静态按钮的三态是场景层派发**推**过来的",
+        "（MouseHover / MousePress / MouseRelease），动态按钮没有那三个入口，",
+        "只有 JudgePointer()——它每帧在自己的 Tick 里**读**场景的指针状态",
+        "自己判。详见 include/button/InkingDynamicButton.h 顶上那段。",
+        "",
+        "颜色刻意与静态的 normalButton 拉开（那个是白色、这个是青色），",
+        "示例里两块按钮并排摆着，一眼能分出谁是谁、谁在动。",
+        "",
+        "这里还给悬停配了**旋转**（transform 的 rotate，单位是度、绕组件中心转），",
+        "顺带证明「变换通道」对两档一视同仁：静态那块是「上移+放大」，",
+        "动态这块是「转 8 度」——两边都不改本地几何、都不需要重烘命中数据。"
+    ],
+    "name": "dynamicTestButton",
+    "dynamic": true,
+    "width": 220,
+    "height": 100,
+    "normal": {
+        "type": "color",
+        "source": "0.2|0.8|0.9|0.35"
+    },
+    "hover": {
+        "type": "color",
+        "source": "0.2|0.8|0.9|0.85",
+        "transition": { "duration": 0.2 },
+        "transform": { "rotate": 8, "scale": 1.04 }
+    },
+    "onclicked": {
+        "type": "color",
+        "source": "0.2|0.8|0.9|0.35"
+    },
+    "offsetX": -320,
+    "selfAnchorX": 0.5,
+    "selfAnchorY": 0.5,
+    "traceAnchorX": 0.5,
+    "traceAnchorY": 0.5,
+    "shape": {
+        "type": "roundedRect",
+        "radius": 14
+    }
+}

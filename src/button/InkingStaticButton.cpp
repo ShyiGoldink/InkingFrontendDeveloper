@@ -1,10 +1,9 @@
 #include <button/InkingStaticButton.h>
 
+#include "ButtonPaint.h"
+
 #include <button/ButtonLibrary.h>
 #include <ink/basic/InkLog.h>
-#include <ink/basic/InkingDraw.h>
-
-#include <SDL3/SDL.h>
 
 #include <utility>
 #include <string>
@@ -14,28 +13,14 @@ namespace ink {
 namespace {
 
 /**
- * 设计坐标 → 设备像素的倍率。
+ * "按名字构造却查不到配置"发生了多少次。
  *
- * 基类的 SubmitToRenderer 已经把**左上角**换算过了，但尺寸还得自己乘——
- * 这是"展示倍率不参与布局、只在绘制时换算"那条（docs/API.md「[x] 展示倍率」）。
+ * 函数内静态量而不是文件级静态量：避开静态初始化顺序问题
+ * （AGENTS §6 第 12 条）。只在 UI 线程构造按钮，不需要原子。
  */
-float magnify(const InkingAnchor& node) {
-    const float value = node.GetMagnification();
-    return value > 0.0f ? value : 1.0f;
-}
-
-/**
- * 配置里没写 fontSize 时用的兜底字号（设计坐标）。
- *
- * 文字真正落地（字形图集）时，这里会换成"机器默认字体在当前 DPI 下的
- * 推荐字号"；现在写死一个常量，是为了让"没配字号"不至于画出一个零高度的
- * 方块——那看起来像 bug，其实是没配。
- */
-constexpr float kDefaultFontSize = 16.0f;
-
-/// 文字占位块的颜色兜底：文字色纯透明时看不到，给个不透明的白。
-std::uint32_t visibleTextColor(std::uint32_t color) {
-    return ColorAlpha(color) == 0u ? 0xFFFFFFFFu : color;
+int& unknownNameCount() {
+    static int count = 0;
+    return count;
 }
 
 }  // namespace
@@ -58,24 +43,30 @@ InkingStaticButton::InkingStaticButton(InkingAnchor* parent,
     if (registered != nullptr) {
         applyData(*registered);
     } else {
-        // 没登记过：名字拼错、或者登记代码还没接上（生成器没落地）。
-        // 数据用一份 normalize 过的兜底值，至少是个看得见的黑按钮。
-        ButtonData fallback;
-        fallback.name = name;
-        applyData(fallback);
+        // 没登记过：名字拼错，或者这条用法该换成**生成出来的类**。
+        //
+        // 这里**故意不退回"一份看起来正常的默认外观"**：那样按钮长得不对，
+        // 却没有任何报错，只能靠肉眼发现（第一版就是这样）。现在写一条错误
+        // 日志、给一个空按钮、并让计数加一——于是它是**可断言**的。
+        ++unknownNameCount();
+        INK_LOG_ERROR(
+            std::string(kButtonModuleName),
+            "按名字构造却查不到配置，给了一个空按钮：" + name
+                + "（名字拼错了？或者这里该用生成出来的按钮类——"
+                  "生成的类是数据烘在类里，不查表）");
+
+        ButtonData empty;
+        empty.name = name;
+        applyData(empty);
     }
     finishConstruction(/*foundInLibrary=*/registered != nullptr);
 }
 
-void InkingStaticButton::finishConstruction(bool foundInLibrary) {
-    if (!foundInLibrary) {
-        INK_LOG_WARN(std::string(kButtonModuleName),
-                     "按名字构造时库里没有这份配置，已退回默认外观："
-                         + _data.name
-                         + "（生成器落地前请先 ButtonLibrary::Register，"
-                           "或改用 ButtonData 构造）");
-    }
+int InkingStaticButton::UnknownNameCount() noexcept {
+    return unknownNameCount();
+}
 
+void InkingStaticButton::finishConstruction(bool /*foundInLibrary*/) {
     // 尺寸为 0 的按钮画不出来也点不到，这几乎总是配置漏了 width/height。
     if (_data.width <= 0 || _data.height <= 0) {
         INK_LOG_WARN(std::string(kButtonModuleName),
@@ -91,10 +82,9 @@ void InkingStaticButton::applyData(const ButtonData& data) {
     _data = data;
     _data.Normalize();
 
-    // 三态外观展开存好，渲染时按状态直接取，不在每帧去判一遍。
-    _normal = _data.normal;
-    _hover = _data.hover;
-    _onclicked = _data.onclicked;
+    // 三态外观展开存好（ButtonLook 里），渲染时按状态直接取，
+    // 不在每帧去判一遍。状态机也一起复位。
+    _look.Reset(_data);
 
     if (!_data.text.path.empty() || _data.text.fontSize > 0.0f) {
         // text.path 明确写了字体时，只记下来：加载字体属于文字渲染那一段，
@@ -106,8 +96,7 @@ void InkingStaticButton::applyData(const ButtonData& data) {
 
     // 基类那份 color 跟着**当前状态**走：本类重写了 onRender，用不到它，
     // 但保持一致可以避免"从基类窗口看颜色"时读到另一个答案。
-    _state = ResolveState(_hovered, _pressed);
-    _color = appearanceFor(_state).color;
+    syncBaseColor();
 
     // -----------------------------------------------------------------------
     // 几何：写进基类
@@ -156,23 +145,14 @@ const ButtonData* InkingStaticButton::FindData(const std::string& name) {
 }
 
 bool InkingStaticButton::HitTest(float worldX, float worldY) const {
-    // 父链上任何一层不可见，就不该还能被点到。
-    if (!IsVisibleInTree()) {
-        return false;
-    }
-
-    // 世界坐标 → 本地坐标（相对按钮左上角）。命中用的是**设计坐标**里的
-    // GetAbsX()/GetAbsY()，和渲染提交时用的是同一套推导，所以整体缩放
-    // 不需要重烘任何东西（docs/InputDesign.md §2 第 3 条）。
-    const float localX = worldX - GetAbsX();
-    const float localY = worldY - GetAbsY();
-
-    // 形状是唯一真相：渲染、命中、AABB 都从 GetShape() 派生。
-    return ShapeContains(GetShape(), localX, localY, GetWidth(), GetHeight());
+    // 世界坐标 → 本地 → 形状判定，三步和绘制共用同一套定义
+    // （见 detail::HitTestButton：它会把当前变换取逆过一次）。
+    return detail::HitTestButton(*this, GetShape(), _look.displayTransform,
+                                 worldX, worldY);
 }
 
 ButtonState InkingStaticButton::GetState() const noexcept {
-    return _state;
+    return _look.state;
 }
 
 const ShapeSpec& InkingStaticButton::GetShape() const noexcept {
@@ -180,7 +160,23 @@ const ShapeSpec& InkingStaticButton::GetShape() const noexcept {
 }
 
 const ButtonAppearance& InkingStaticButton::GetAppearance() const noexcept {
-    return appearanceFor(_state);
+    return _look.Current();
+}
+
+std::uint32_t InkingStaticButton::GetDisplayColor() const noexcept {
+    // 过渡进行中它是插值出来的中间色；没有过渡时等于当前状态那份配置的颜色。
+    return _look.displayColor;
+}
+
+const TransformSpec& InkingStaticButton::GetDisplayTransform() const noexcept {
+    // 同样：过渡进行中是插值出来的中间变换，没有过渡时就是当前状态那份配置的。
+    return _look.displayTransform;
+}
+
+ShapeBounds InkingStaticButton::GetHitEnvelope() const {
+    // 静态 / 动态共用同一份算法（src/button/ButtonPaint.cpp）：
+    // "三态变换的并集"对表条目和洞是同一件事——它可能盖住哪儿。
+    return detail::ButtonHitEnvelope(_data, GetShape(), GetWidth(), GetHeight());
 }
 
 const ButtonAppearance& InkingStaticButton::GetAppearance(
@@ -212,24 +208,44 @@ void InkingStaticButton::SetOnClicked(ButtonClickCallback callback) {
 
 const ButtonAppearance& InkingStaticButton::appearanceFor(
     ButtonState state) const noexcept {
-    switch (state) {
-        case ButtonState::Hover:
-            return _hover;
-        case ButtonState::Pressed:
-            return _onclicked;
-        case ButtonState::Normal:
-        default:
-            return _normal;
-    }
+    // 规则本体在 ButtonLook（静态 / 动态共用），这里只是转发。
+    return _look.For(state);
 }
 
 ButtonState InkingStaticButton::ResolveState(bool hover, bool press) noexcept {
-    // 按下 > 悬停 > 通常。按下期间指针滑出去了也还是"按下"——
-    // 用户按着不放往外拖，按钮不该看起来已经松开了。
-    if (press) {
-        return ButtonState::Pressed;
+    // 规则本体在 ButtonLook（静态 / 动态共用），这里只是转发。
+    return ButtonLook::Resolve(hover, press);
+}
+
+void InkingStaticButton::syncBaseColor() noexcept {
+    // 基类的 color 跟着**当前显示**的颜色走（过渡中是插值色），
+    // 保持"从基类读到的是同一件事"。
+    _color = _look.displayColor;
+}
+
+// ---------------------------------------------------------------------------
+// 每渲染帧一次：三态之间的颜色过渡与变换（本地几何一动不动）
+// ---------------------------------------------------------------------------
+
+void InkingStaticButton::onAnimationTick(float deltaSeconds) {
+    // `Advance` 在没有过渡在跑时直接返回两个 false（稳态 = 一个分支 + 什么都不做）。
+    const ButtonLook::AdvanceResult advanced = _look.Advance(deltaSeconds);
+    if (!advanced.repaint && !advanced.hit) {
+        return;
     }
-    return hover ? ButtonState::Hover : ButtonState::Normal;
+
+    if (advanced.repaint) {
+        syncBaseColor();
+        // 画面变了 → **重绘脏**。注意这里**不能**标成命中脏：颜色/变换不改命中表，
+        // 标错了就会每帧白重建一次绘制列表（排序 + 重算所有静态坐标快照）。
+        MarkRepaintDirty();
+    }
+    if (advanced.hit) {
+        // 变换变了 → **命中脏**：按钮转过去以后，同一个点可能落到别的组件上，
+        // 悬停必须重算。但它仍然**不改表**——表按本地形状烘，查询时把点
+        // 反变换回本地即可（docs/InputDesign.md §11 的变换通道）。
+        MarkDirty();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -237,35 +253,21 @@ ButtonState InkingStaticButton::ResolveState(bool hover, bool press) noexcept {
 // ---------------------------------------------------------------------------
 
 bool InkingStaticButton::MouseHover(bool hover) noexcept {
-    if (_hovered == hover) {
+    // 标志的进出与三态的重算都收在 ButtonLook 里：返回 false 有两种情形
+    // （标志没变、或标志变了但三态没变——例如拖拽时指针滑出去），
+    // 两种都不该换色，所以这里直接返回。
+    if (!_look.SetHovered(hover)) {
         return false;
     }
-    _hovered = hover;
-
-    const ButtonState next = ResolveState(_hovered, _pressed);
-    if (next == _state) {
-        // 三态没变（例如拖拽时"在里面"变了但状态还是 Pressed），
-        // 那就连颜色都不用换，更不用惊动场景。
-        return false;
-    }
-    _state = next;
-    // 基类的 color 跟着当前状态走，保持"从基类读到的是同一件事"。
-    _color = appearanceFor(_state).color;
+    syncBaseColor();
     return true;
 }
 
 bool InkingStaticButton::MousePress(bool press) noexcept {
-    if (_pressed == press) {
+    if (!_look.SetPressed(press)) {
         return false;
     }
-    _pressed = press;
-
-    const ButtonState next = ResolveState(_hovered, _pressed);
-    if (next == _state) {
-        return false;
-    }
-    _state = next;
-    _color = appearanceFor(_state).color;
+    syncBaseColor();
     return true;
 }
 
@@ -286,53 +288,19 @@ bool InkingStaticButton::TriggerClick() {
 // ---------------------------------------------------------------------------
 
 void InkingStaticButton::onRender(float pixelX, float pixelY) const {
-    renderShape(pixelX, pixelY);
+    // 画什么由 src/button/ButtonPaint.cpp 提供，静态 / 动态按钮共用同一份：
+    // 两份实现各自演化就会出现"静态按钮和动态按钮画得不一样"。
+    // 颜色取**当前显示**那份（过渡中是插值色），变换同样取当前那份
+    // （命中那边会对它取逆，两边必须同源）。
+    detail::PaintButtonShape(*this, GetShape(), _look.displayTransform,
+                             _look.displayColor, pixelX, pixelY);
     if (_data.HasLabel()) {
         renderText(pixelX, pixelY);
     }
 }
 
-void InkingStaticButton::renderShape(float pixelX, float pixelY) const {
-    SDL_Renderer* renderer = detail::currentRenderer();
-    if (renderer == nullptr) {
-        return;
-    }
-
-    const float scale = magnify(*this);
-    const ShapeBounds bounds = GetShapeBounds(GetShape(), GetWidth(),
-                                              GetHeight());
-    // 设备像素尺寸 = 设计坐标尺寸 × 展示倍率。
-    const ShapeBounds scaled{bounds.x * scale, bounds.y * scale,
-                             bounds.width * scale, bounds.height * scale};
-
-    // 三态之间的差别现在只体现在颜色上（含 alpha），形状与位置完全不动——
-    // 这正是按钮能是**静态**组件的原因（见头文件那段说明）。
-    // 形状层接手抗锯齿填充时，换掉 fillShapeBounds 这一处即可。
-    detail::fillShapeBounds(renderer, scaled, pixelX, pixelY,
-                            appearanceFor(_state).color);
-}
-
 void InkingStaticButton::renderText(float pixelX, float pixelY) const {
-    SDL_Renderer* renderer = detail::currentRenderer();
-    if (renderer == nullptr) {
-        return;
-    }
-
-    const float scale = magnify(*this);
-    const float fontSize = _data.text.fontSize > 0.0f ? _data.text.fontSize
-                                                      : kDefaultFontSize;
-
-    // 文字块的左上角：配置里给的是**距组件左上角的间距**，不是坐标。
-    // 宽度按"字号 × 字数"估一个，够把区域钉住；真正的字形推进要等图集。
-    const float textX = pixelX + _data.text.leftSpace * scale;
-    const float textY = pixelY + _data.text.topSpace * scale;
-    const float textWidth =
-        fontSize * scale * static_cast<float>(_data.label.size());
-    const float textHeight = fontSize * scale;
-
-    const SDL_FRect rect{textX, textY, textWidth, textHeight};
-    detail::setDrawColor(renderer, visibleTextColor(_data.textColor));
-    SDL_RenderFillRect(renderer, &rect);
+    detail::PaintButtonText(*this, _data, pixelX, pixelY);
 }
 
 }  // namespace ink

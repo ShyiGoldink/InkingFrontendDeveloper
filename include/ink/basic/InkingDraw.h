@@ -17,6 +17,7 @@
 #include <ink/basic/InkingAnchor.h>
 #include <ink/dataStruct/InkingColor.h>
 #include <ink/dataStruct/InkingShapeSpec.h>
+#include <ink/dataStruct/InkingTransform.h>
 
 #include <SDL3/SDL.h>
 
@@ -47,28 +48,40 @@ inline void setDrawColor(SDL_Renderer* renderer, std::uint32_t color) {
 }
 
 /**
- * 把形状的**包围盒**填成一块实心色，位置是设备像素。
+ * @brief 按形状填一块，边缘**抗锯齿**——这是唯一的填充入口。
  *
- * 名字特意写 Bounds 而不是 Shape：现在的填充还是**直角矩形**——形状层要
- * 抗锯齿填充得换 SDL3 GPU API、或者走 `SDL_RenderGeometry` 三角化
- * （TempTask 第 2 步的三个选项），还没做。
+ * 形状是唯一真相：几何取的是 `InkingShapeSpec.h` 那一份定义，
+ * 和命中用的 `ShapeContains` 同源，所以"画的是圆角、点到的是直角"
+ * 这条已知不一致在这里被消掉（早先那个只填包围盒的 `fillShapeBounds`
+ * 已经删掉，调用方一处都没改：两条调用都换成了本函数）。
  *
- * 所以现在有一个**已知的不一致**：
- *   - 命中判定（`ShapeContains`）已经按圆角在判，被磨掉的角点不到；
- *   - 填充仍然把那个角涂上颜色。
- * 编译期和运行期都不会报错，只有真像素能看出来——所以 ink_button_test 把
- * 「圆角区域的像素还在」显式记了一条，而不是假装它不存在。
- * 填充换上 SDF 之后换掉这一个函数，调用方一处都不用改。
+ * 怎么画的：把形状的轮廓解析地采样成多边形，用 `SDL_RenderGeometry`
+ * 三角化提交——**不是 CPU 逐像素光栅化**（docs/AGENTS.md §3 第 3 条）。
+ * 边界那一圈再切出一条约 1 像素宽的带子：带子外圈顶点 alpha = 0、
+ * 内圈顶点 alpha = 源色 alpha，于是边界上是 0→1 的线性过渡。
+ *
+ * 成立的前提是**绘制混合模式是打开的**：窗口层开过一次
+ * （`InkingWindow::Show`），离屏自检也要自己开（AGENTS §6 第 32 条）。
+ * 实测（software 渲染器）：`SDL_RenderGeometry` 的逐顶点 alpha 确实参与
+ * 混合——alpha=0.5 的蓝叠在不透明红上读出 `0xFF7F0080`；同一三角形里
+ * 两个顶点 alpha 不同时中间会插值（`0xFFE41B00` → `0xFF08EE08`）。
+ * 混合关掉时 alpha 会被原样写进像素（读出 `0x80FFFFFF`），那时抗锯齿
+ * 只剩"半个像素被涂成不透明色"——所以别把混合当可选项。
+ *
+ * 实现见 `src/ink/basic/InkingDraw.cpp`。
+ *
+ * @param renderer      渲染器；传 nullptr 是空操作。
+ * @param shape         形状定义（`rect` / `roundedRect` / `circle` / `ellipse`）。
+ * @param width,height  组件尺寸，**设计坐标**。
+ * @param magnification 展示倍率（设计单位 → 设备像素）；几何与羽化带都乘它。
+ * @param pixelX,pixelY 左上角，**设备像素**（调用方已经换算过）。
+ * @param transform     变换通道（平移 / 旋转 / 缩放），绕组件中心应用；
+ *                      传 `TransformSpec{}` 就是不动。它**只动这一笔的位置与朝向**，
+ *                      不改形状、尺寸，也不改命中表（docs/InputDesign.md §11）。
+ * @param color         填充色 0xAARRGGBB；alpha 会参与合成。
  */
-inline void fillShapeBounds(SDL_Renderer* renderer, const ShapeBounds& bounds,
-                            float pixelX, float pixelY, std::uint32_t color) {
-    if (renderer == nullptr) {
-        return;
-    }
-    const SDL_FRect rect{pixelX + bounds.x, pixelY + bounds.y, bounds.width,
-                         bounds.height};
-    setDrawColor(renderer, color);
-    SDL_RenderFillRect(renderer, &rect);
-}
+void fillShape(SDL_Renderer* renderer, const ShapeSpec& shape, int width,
+               int height, float magnification, float pixelX, float pixelY,
+               const TransformSpec& transform, std::uint32_t color);
 
 }  // namespace ink::detail

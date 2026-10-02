@@ -15,6 +15,7 @@
 #include <ink/basic/InkingAnchor.h>
 #include <ink/dataStruct/InkingColor.h>
 #include <ink/dataStruct/InkingShapeSpec.h>
+#include <ink/dataStruct/InkingTransform.h>
 
 #include <cstdint>
 #include <string>
@@ -42,6 +43,35 @@ struct ButtonAppearance {
     AppearanceType type = AppearanceType::Color;
     std::uint32_t color = 0xFF000000u;  ///< type == Color 时有效，0xAARRGGBB
     std::string source;                 ///< 原样的配置串，留给纹理层用
+
+    /**
+     * **进入这个状态时**的过渡时长（秒）。0 = 瞬间切换（配置里没写 `transition`）。
+     *
+     * 写在状态自己身上，是因为"过场段各自带时长"（`TaskGuide.md` 的 D-1）：
+     * normal→hover 用 hover 这份，hover→normal 用 normal 那份，各配各的。
+     *
+     * 过渡**只插值颜色与透明度，绝不碰几何**——那是按钮能继续待在静态档
+     * （几何不变 → 进命中表）的前提。运行期怎么插值见 `ButtonLook::Advance`。
+     *
+     * 缓动曲线还没做，现在一律 linear（配置里也**没有** easing 字段：
+     * 给一个只能填一个值的开关，只会让人以为有得选）。
+     */
+    float transitionSeconds = 0.0f;
+
+    /**
+     * 这个状态下的**目标变换**（平移 / 旋转 / 缩放），缺省是单位变换。
+     *
+     * 它属于 InputDesign.md §11 的**变换通道**：不改本地几何、**也不改命中表**——
+     * 表按本地形状烘，查询时把点反变换回本地空间。所以**静态组件也能有它**，
+     * 命中照样忠实（画的时候顶点过正变换，点的时候过一次逆变换，两者恒等）。
+     *
+     * 与 `transitionSeconds` 配合：进这个状态时，颜色与变换**一起**按同一段时长插过去。
+     *
+     * 数据上放在"外观"里是刻意的：配置里它就写在同一个状态对象里
+     * （`"hover": { ..., "transform": {...} }`），`ButtonLook::For(state)` 一次就能拿到
+     * "这个状态长什么样、摆在哪儿"。要是拆成另一组三态字段，两边就得同步维护了。
+     */
+    TransformSpec transform{};
 
     ButtonAppearance() = default;
     ButtonAppearance(AppearanceType appearanceType, std::uint32_t argb)

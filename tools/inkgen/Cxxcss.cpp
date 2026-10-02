@@ -15,7 +15,7 @@ const char* const kKnownRootFields[] = {
     "normal",      "hover",       "onclicked",    "text",
     "selfAnchorX", "selfAnchorY", "traceAnchorX", "traceAnchorY",
     "offsetX",     "offsetY",     "zIndex",       "visible",
-    "shape",
+    "shape",       "dynamic",
 };
 
 const char* const kKnownTextFields[] = {
@@ -133,6 +133,17 @@ public:
                     _config.data.visible = value.boolean;
                 } else {
                     Error(value, "visible 必须是 true 或 false");
+                }
+            } else if (key == "dynamic") {
+                // 生成期的一个"选哪个基类"的开关，不进运行期数据结构。
+                // 所以它只认 bool：写成字符串或数字都是笔误，
+                // 而"悄悄按 truthy 处理"会让配置看着生效、其实没生效。
+                if (value.IsBool()) {
+                    _config.dynamic = value.boolean;
+                } else {
+                    Error(value, "dynamic 必须是 true 或 false（它决定生成的类"
+                                     "继承 InkingStaticButton 还是 "
+                                     "InkingDynamicButton）");
                 }
             } else if (key == "shape") {
                 ReadShape(value);
@@ -272,10 +283,12 @@ private:
         }
 
         for (const auto& entry : value.fields) {
-            if (entry.first != "type" && entry.first != "source") {
+            if (entry.first != "type" && entry.first != "source"
+                && entry.first != "transition" && entry.first != "transform") {
                 Error(entry.second,
                       field + " 里的字段 \"" + entry.first
-                          + "\" 不认识（这一层只认 type 和 source）");
+                          + "\" 不认识（这一层只认 type、source、transition、"
+                            "transform）");
             }
         }
 
@@ -329,8 +342,107 @@ private:
             return;
         }
 
+        // 过渡写在状态自己身上（TaskGuide 的 D-1）：进了这个状态就用它的时长。
+        // 外观本身有错（上面已经 return）时不再解析它——那条错更值得先修。
+        if (const JsonValue* transition = value.Find("transition")) {
+            ReadTransition(*transition, field, out);
+        }
+
+        // 变换同样是"这个状态自己带一份"：进这个状态就朝这份变换走。
+        if (const JsonValue* transform = value.Find("transform")) {
+            ReadTransform(*transform, field, out);
+        }
+
         if (sawNormal != nullptr) {
             *sawNormal = true;
+        }
+    }
+
+    /**
+     * `"transition": { "duration": 0.15 }` —— 进入这个状态时的过渡时长（秒）。
+     *
+     * 只认 `duration`：**缓动曲线还没做**，现在一律 linear。所以这里**不给**
+     * `easing` 留位——一个只能填一个值的开关，只会让人以为有得选。
+     * 真要曲线时再加，那时它是新字段，不会和现在这份配置冲突。
+     */
+    void ReadTransition(const JsonValue& value, const std::string& field,
+                        ink::ButtonAppearance& out) {
+        if (!value.IsObject()) {
+            Error(value, field
+                             + ".transition 必须是对象，形如 {\"duration\":0.15}");
+            return;
+        }
+
+        for (const auto& entry : value.fields) {
+            if (entry.first != "duration") {
+                Error(entry.second,
+                      field + ".transition 里的字段 \"" + entry.first
+                          + "\" 不认识（这一层只认 duration；缓动曲线还没做，"
+                            "现在一律 linear）");
+                continue;
+            }
+
+            const double seconds
+                = ReadNumber(entry.second, field + ".transition.duration");
+            if (seconds <= 0.0) {
+                Error(entry.second,
+                      field + ".transition.duration 必须大于 0（现在是 "
+                          + std::to_string(seconds)
+                          + "）；不想要过渡就别写 transition");
+                continue;
+            }
+            out.transitionSeconds = static_cast<float>(seconds);
+        }
+    }
+
+    /**
+     * `"transform": { "translateX": 0, "translateY": -4, "rotate": 0, "scale": 1.05 }`
+     * —— **变换通道**（平移 / 旋转 / 缩放）。四个字段都可选，不写就是单位变换。
+     *
+     * 它**不改本地几何、也不改命中表**（`docs/InputDesign.md` §11：表按本地形状烘，
+     * 查询时把点反变换回本地空间），所以**静态档也能配**——这是"静态按钮也能
+     * 移动 / 旋转"的根据。
+     *
+     * 两条约定（运行期同一份定义在 `include/ink/dataStruct/InkingTransform.h`）：
+     *   - 原点是**组件中心**（等价 CSS 的 `transform-origin: 50% 50%`）；
+     *   - `rotate` 的单位是**度**，顺时针为正。
+     */
+    void ReadTransform(const JsonValue& value, const std::string& field,
+                       ink::ButtonAppearance& out) {
+        if (!value.IsObject()) {
+            Error(value,
+                  field + ".transform 必须是对象，形如 "
+                          "{\"translateY\":-4,\"scale\":1.05}");
+            return;
+        }
+
+        for (const auto& entry : value.fields) {
+            const std::string& key = entry.first;
+            const JsonValue& child = entry.second;
+
+            if (key == "translateX") {
+                out.transform.translateX = static_cast<float>(
+                    ReadNumber(child, field + ".transform.translateX"));
+            } else if (key == "translateY") {
+                out.transform.translateY = static_cast<float>(
+                    ReadNumber(child, field + ".transform.translateY"));
+            } else if (key == "rotate") {
+                out.transform.rotate = static_cast<float>(
+                    ReadNumber(child, field + ".transform.rotate"));
+            } else if (key == "scale") {
+                const double scale = ReadNumber(child, field + ".transform.scale");
+                if (scale == 0.0) {
+                    Error(child, field + ".transform.scale 不能是 0"
+                                     "（那会把形状压成一个点；要「消失」"
+                                     "请缩到 0.01 之类）");
+                    continue;
+                }
+                out.transform.scale = static_cast<float>(scale);
+            } else {
+                Error(child,
+                      field + ".transform 里的字段 \"" + key
+                          + "\" 不认识（只认 translateX、translateY、rotate、scale）");
+            }
         }
     }
 
@@ -601,18 +713,20 @@ bool IsCxxIdentifier(const std::string& name) {
 
 std::string MakeNameConstant(const std::string& name) {
     if (!IsCxxIdentifier(name)) {
-        // 名字里有点或连字符（例如示例里的 button.example）：按名查找照样能用，
-        // 只是不生成常量——硬编一个 kButtonExampleName 反而让人以为可以引用。
+        // 名字里有点或连字符（例如示例里的 button.example）：生成不出类，
+        // 这个按钮就只能按字符串名字使用（数据照样会进 RegisterAllButtons）。
         return std::string();
     }
-    std::string constant = "k";
-    constant += static_cast<char>(std::toupper(static_cast<unsigned char>(
-        name[0])));
-    for (std::size_t i = 1; i < name.size(); ++i) {
-        constant += name[i];
-    }
-    constant += "Name";
-    return constant;
+
+    // `normalButton` → `NormalButton`：首字母大写，变成一个**类名**。
+    //
+    // 为什么用类名而不是 `kNormalButtonName` 常量：生成的是完整的一个类，
+    // 数据烘在类里。用类名当查找键，"拼错名字"就等于"类型不存在"，
+    // 比"拼错一个字符串常量"更早、更硬地拦住。
+    std::string type = name;
+    type[0] = static_cast<char>(
+        std::toupper(static_cast<unsigned char>(type[0])));
+    return type;
 }
 
 LoadResult LoadButtonConfig(const std::string& path) {

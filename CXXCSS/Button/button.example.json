@@ -13,6 +13,11 @@
         "对于path你需要提供字体的绝对路径，为空我们会使用机器的默认字体",
         "但是，我们不建议直接在按钮中配置文字！这些文字最后会渲染为纹理，这会导致按钮本身不支持多语言！",
         "hover，onclicked：与normal一致",
+        "transition：可选，写在**状态自己**身上，表示『进入这个状态时』的过渡。目前只认 duration（秒，必须>0）：",
+        "进 hover 用 hover 的 duration，离开 hover 回 normal 用 normal 的 duration——两边可以不一样（这里 0.15 进、0.3 退）。",
+        "不写 transition 就是瞬间切换（比如这里的 onclicked：按下要立刻有反馈）。",
+        "过渡只插值**颜色与透明度**，绝不碰几何——所以按钮仍然是静态组件，命中区域不会因为动画而改变。",
+        "缓动曲线还没做，现在一律 linear。",
         "SelfAnchorX/SelfAnchorY:自身锚点x和y",
         "TraceAnchorX/TraceAnchorY:追踪父类的x和y锚点。锚点可以是任意浮点数。但请最好保证位于区间[0,1],我们不能保证超大浮点数是否会造成未定义问题",
         "shape:形状层。type选形状，其余字段是它的参数。这里是圆角矩形，radius=10（设计坐标像素）。",
@@ -23,11 +28,13 @@
     "height": "100",
     "normal": {
         "type": "color",
-        "source": "0|0|0|0.75"
+        "source": "0|0|0|0.75",
+        "transition": { "duration": 0.3 }
     },
     "hover": {
         "type": "color",
-        "source": "0|0|0|0.85"
+        "source": "0|0|0|0.85",
+        "transition": { "duration": 0.15 }
     },
     "onclicked": {
         "type": "color",

@@ -3,11 +3,14 @@
 // 几个组件的公开头在这里被 include 一次，理由见 docs/CodeStyleRule.md §2.4：
 // 新公开头如果不被任何 .cpp 或自检 include，它就是"永远编译不过的死文件"，
 // 而构建照样全绿（这个坑踩过——include/scene/InkingScene.h 曾经藏了很久）。
+#include <button/ButtonLook.h>
+#include <button/InkingDynamicButton.h>
 #include <button/InkingStaticButton.h>
 
 #include <SDL3/SDL.h>
 
 #include <type_traits>
+#include <utility>
 
 namespace ink {
 
@@ -67,6 +70,49 @@ static_assert(HasSetVisible<InkingStaticButton>,
               "可见性是骨架变化，两版都该有");
 static_assert(HasChangeZIndex<InkingStaticButton>,
               "层级是骨架变化，两版都该有");
+
+// ---------------------------------------------------------------------------
+// 动态档：同一套断言镜像一份
+//
+// 动态按钮（InkingDynamicButton）与静态按钮是**同一个组件的两档**，
+// 判据反过来：它必须有几何写入口（几何会自己变，那是它存在的理由），
+// 而且两个档位二选一、不能同时是。
+//
+// 这几条不只是"描述现状"：哪天有人为了让静态按钮"按下时缩一下"而把
+// InkingDynamicButton 的几何写入口搬进公共基类，上面的
+// `!HasResize<InkingStaticButton>` 会当场把构建打红，而这里会说明
+// 那条路本来该走哪个类型。
+// ---------------------------------------------------------------------------
+
+static_assert(std::is_base_of_v<InkingDynamicAnchor, InkingDynamicButton>,
+              "动态按钮属于动态档：几何会自己变，所以不进命中表");
+static_assert(!std::is_base_of_v<InkingStaticAnchor, InkingDynamicButton>,
+              "静态 / 动态是二选一，不能既进表又不进表");
+
+static_assert(HasResize<InkingDynamicButton>,
+              "动态组件必须有 Resize（几何写入口是这一档存在的理由）");
+static_assert(HasChangeSelfAnchor<InkingDynamicButton>,
+              "动态组件必须有 ChangeSelfAnchor");
+static_assert(HasChangeTraceAnchor<InkingDynamicButton>,
+              "动态组件必须有 ChangeTraceAnchor");
+static_assert(HasChangeOffset<InkingDynamicButton>,
+              "动态组件必须有 ChangeOffset");
+static_assert(HasSetVisible<InkingDynamicButton>,
+              "可见性是骨架变化，两版都该有");
+static_assert(HasChangeZIndex<InkingDynamicButton>,
+              "层级是骨架变化，两版都该有");
+
+// 两块按钮共用同一份三态外观与状态机（ButtonLook.h），不能各写一份：
+// 两份实现各自演化就会出现"静态按钮按下去和动态按钮长得不一样"。
+// 这里钉住"两边问出来的三态是同一个类型"——谁另起一套 ButtonState 都会红。
+static_assert(std::is_same_v<decltype(std::declval<const InkingStaticButton&>()
+                                          .GetState()),
+                             ButtonState>,
+              "静态按钮的三态来自共用的 ButtonState");
+static_assert(std::is_same_v<decltype(std::declval<const InkingDynamicButton&>()
+                                          .GetState()),
+                             ButtonState>,
+              "动态按钮的三态也来自共用的 ButtonState");
 
 std::string sdl3_version() {
     // SDL3 把版本编码成一个整数返回（SDL2 是出参形式的 SDL_version）。

@@ -150,8 +150,8 @@ void testGoodConfig() {
     check(data.name == "goodButton",
           "name 与文件名一致（实得 \"" + data.name + "\"，长度 "
               + std::to_string(data.name.size()) + "）");
-    check(button.identifier == "kGoodButtonName",
-          "生成了常量名 kGoodButtonName（实得：" + button.identifier + "）");
+    check(button.identifier == "GoodButton",
+          "生成了类名 GoodButton（实得：" + button.identifier + "）");
     check(data.width == 200 && data.height == 100, "尺寸取自配置");
     check(!data.hoverInheritsNormal && !data.onclickedInheritsNormal,
           "三态都显式写了，不继承");
@@ -324,10 +324,21 @@ void testEmit() {
     check(header.find("namespace ink") != std::string::npos
               && header.find("namespace test_ns") != std::string::npos,
           "头文件用的是指定的命名空间");
-    check(header.find("kGoodButtonName = \"goodButton\"") != std::string::npos,
-          "头文件里有名字常量（大写首字母）");
-    check(header.find("kLegacyButtonName") != std::string::npos,
-          "第二个按钮的常量也在");
+    // 每个名字一个**独立的类**，数据烘在类里（不是运行期查表）。
+    check(header.find("class GoodButton : public ink::InkingStaticButton")
+              != std::string::npos,
+          "头文件为每个名字生成了一个独立的类");
+    check(header.find("static constexpr const char* kName = \"goodButton\"")
+              != std::string::npos,
+          "类里带着自己的名字（kName）");
+    check(header.find("class LegacyButton") != std::string::npos,
+          "第二个按钮的类也在");
+    check(header.find("explicit GoodButton(ink::InkingAnchor* parent)")
+              != std::string::npos,
+          "类只要求父级——配置烘在里面，不需要外部传数据");
+    check(header.find("static const ink::ButtonData& Data();")
+              != std::string::npos,
+          "类暴露 Data()（函数内静态量，避开静态初始化顺序问题）");
     check(header.find("RegisterAllButtons") != std::string::npos
               && header.find("void RegisterAllButtons();")
                      != std::string::npos,
@@ -337,7 +348,15 @@ void testEmit() {
           "圆角形状生成成工厂调用");
     check(source.find("0xbf000000") != std::string::npos
               || source.find("0xBF000000") != std::string::npos,
-          "颜色生成成 0xAARRGGBB 字面量");    check(source.find("BeginRegistrationBatch") != std::string::npos
+          "颜色生成成 0xAARRGGBB 字面量");
+    check(source.find("const ink::ButtonData& GoodButton::Data()")
+              != std::string::npos
+              && source.find("static const ink::ButtonData data = Build")
+                     != std::string::npos,
+          "Data() 用函数内静态量：只构造一次、拿到的永远是同一份");
+    check(source.find("void GoodButton::Register()") != std::string::npos,
+          "每个类有 Register()，登记表由 RegisterAllButtons 汇总");
+    check(source.find("BeginRegistrationBatch") != std::string::npos
               && source.find("EndRegistrationBatch") != std::string::npos,
           "登记夹在批次入口之间（重复登记幂等）");
     check(source.find("gRegisterOnStartup") != std::string::npos,

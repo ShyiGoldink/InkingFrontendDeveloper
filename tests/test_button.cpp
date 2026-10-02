@@ -14,6 +14,7 @@
 #include <ink/dataStruct/InkingShapeSpec.h>
 #include <button/ButtonData.h>
 #include <button/ButtonLibrary.h>
+#include <button/InkingDynamicButton.h>
 #include <button/InkingStaticButton.h>
 #include <scene/InkingScene.h>
 #include <scene/SceneLibrary.h>
@@ -636,22 +637,204 @@ void testRender() {
     button.MouseRelease();
     button.MouseHover(false);
 
-    // ---- 形状：被磨掉的角不该有像素 ----
+    // ---- 形状：画出来的区域必须和命中的区域是同一份定义 ----
     //
     // (101,101) 落在按钮包围盒里，但按圆角定义它在**外面**
-    // （到角心 (110,110) 的距离 ≈ 12.73 > 半径 10）。现在的填充还是直角矩形
-    // （抗锯齿填充要等形状层第二步），所以这一条现在**必然失败**——
-    // 它记录的是"形状与填充还没统一"这个已知状态，不是回归。
-    // 形状层做完填充之后，这条要改成 check(...)。
+    // （到角心 (110,110) 的距离 ≈ 12.73 > 半径 10）。
+    //
+    // 形状层做完抗锯齿填充之前，这里记的是"填充仍是直角矩形、角上照样有像素"
+    // 那条已知不一致；现在填充走的是同一份形状定义，所以它必须是**底色**。
     {
         const float distance =
             ink::SignedDistance(button.GetShape(), 1.0f, 1.0f, 200, 100);
         const std::uint32_t corner = pixelAt(pixels, 101, 101);
-        std::printf("      [记录] 圆角外一点的 f = %.3f，该点像素 = %s\n",
-                    distance, toHex(corner).c_str());
+        std::printf("      [实测] 圆角外一点的 f = %.3f，该点像素 = %s（底色 %s）\n",
+                    distance, toHex(corner).c_str(), toHex(kBackdrop).c_str());
         check(distance > 0.0f, "命中判定：圆角外一点确实在形状外（f > 0）");
-        check(corner != 0x00000000u,
-              "填充仍是直角矩形：被磨掉的角现在照样有像素（形状层第二步修）");
+        check(corner == kBackdrop,
+              "填充按形状走了：被磨掉的角现在是底色，实得 " + toHex(corner));
+    }
+
+    // ---- 抗锯齿：边缘要有半透明过渡，不是硬台阶 ----
+    //
+    // 拿一个大圆来看：圆的边界是斜穿像素网格的，1 像素宽的羽化带必然落在
+    // 某些像素上。完全不透明白叠在深色底上，过渡像素**既不是白也不是底色**，
+    // 一眼就能分出来——这条断言不依赖任何抗锯齿的内部实现细节。
+    {
+        ink::ButtonData circleData = exampleButton();
+        circleData.shape = ink::ShapeSpec::Circle();
+        circleData.width = 121;
+        circleData.height = 121;
+        circleData.selfAnchor = ink::Anchor{0.0f, 0.0f};
+        circleData.traceAnchor = ink::Anchor{0.0f, 0.0f};
+        circleData.offsetX = 600.0f;
+        circleData.offsetY = 400.0f;
+        // 不透明纯白，和底色拉开最大对比；三态无所谓，这里只看边缘。
+        circleData.normal = ink::ButtonAppearance::FromUnitRgba(1.0f, 1.0f, 1.0f);
+        ink::InkingStaticButton circle(&scene, circleData);
+        // 同一帧里再放一个**像素对齐的矩形**按钮：它的边界正好落在像素边界上，
+        // 这时最外一圈像素的覆盖率只能是 0 或 1，不能是"半个"。
+        // 这一条钉的是"羽化带**对称**跨在边界上"——如果整条带子压在边界内侧，
+        // 面板 / 背景板 / 分割线这类矩形的最外一列像素会集体变成半透明。
+        ink::ButtonData rectData = circleData;
+        rectData.shape = ink::ShapeSpec::Rect();
+        rectData.width = 100;
+        rectData.height = 100;
+        rectData.offsetX = 900.0f;
+        rectData.offsetY = 400.0f;
+        ink::InkingStaticButton sharpCorner(&scene, rectData);
+        check(renderAndRead(), "圆形 + 矩形这一帧读回成功");
+
+        // 圆占 (600,400)-(721,521)，圆心 (660.5,460.5)；沿圆心行扫一遍。
+        constexpr int kScanY = 460;
+        constexpr std::uint32_t kWhite = 0xFFFFFFFFu;
+        int solid = 0;
+        int backdropPixels = 0;
+        int feathered = 0;
+        std::uint32_t featheredSample = 0u;
+        for (int x = 560; x < 780; ++x) {
+            const std::uint32_t color = pixelAt(pixels, x, kScanY);
+            if (color == kWhite) {
+                ++solid;
+            } else if (color == kBackdrop) {
+                ++backdropPixels;
+            } else {
+                ++feathered;
+                if (featheredSample == 0u) {
+                    featheredSample = color;
+                }
+            }
+        }
+        const auto brightness = [](std::uint32_t color) {
+            return static_cast<int>(ink::ColorRed(color))
+                 + static_cast<int>(ink::ColorGreen(color))
+                 + static_cast<int>(ink::ColorBlue(color));
+        };
+        std::printf("      [实测] 圆扫描线 y=%d：实心 %d，底色 %d，过渡 %d（样本 %s）\n",
+                    kScanY, solid, backdropPixels, feathered,
+                    toHex(featheredSample).c_str());
+        check(solid > 80, "圆内部是大片实心色");
+        check(backdropPixels > 80, "圆外是底色");
+        check(feathered >= 2,
+              "圆的左右边缘各有半透明过渡像素（抗锯齿真的在，实得 "
+                  + std::to_string(feathered) + " 个过渡像素）");
+        // 过渡像素是"半个像素被覆盖"的结果：亮度必须严格落在底色与实心色之间。
+        // 这一条把"抗锯齿"和"边缘偏了/形状缩水了"分开——后者会给出纯底色或纯实心色。
+        check(feathered > 0 && brightness(featheredSample) > brightness(kBackdrop)
+                  && brightness(featheredSample) < brightness(kWhite),
+              "过渡像素的亮度严格介于底色与实心色之间（实得 "
+                  + toHex(featheredSample) + "）");
+
+        // 像素对齐的矩形：(900,400)-(1000,500)。
+        //
+        // 这里**故意不**断言"最外一圈像素必须完全是实心 / 底色"。
+        // 实测：SDL 的 software 渲染器在 `SDL_RenderGeometry` 里的采样点落在
+        // 像素的**右下角**（GPU 后端用像素中心，那才是标准约定），于是
+        // "边界正好穿过像素"的那一圈会读出 50% 的混合色（实测 `0xFF8C8C90`）。
+        // 那是**后端的光栅化约定**，不是形状的契约——形状的契约是
+        // "离边界 1 像素以上的地方，该实就实、该透就透"，这一条跨后端都成立。
+        check(pixelAt(pixels, 901, 401) == kWhite,
+              "像素对齐的矩形：内部（离边界 1 像素以上）是实心（实得 "
+                  + toHex(pixelAt(pixels, 901, 401)) + "）");
+        check(pixelAt(pixels, 995, 495) == kWhite,
+              "像素对齐的矩形：右下内部也是实心");
+        check(pixelAt(pixels, 898, 400) == kBackdrop,
+              "像素对齐的矩形：左边界外 1 像素以上是底色（实得 "
+                  + toHex(pixelAt(pixels, 898, 400)) + "）");
+        check(pixelAt(pixels, 900, 501) == kBackdrop,
+              "像素对齐的矩形：下边界外 1 像素以上是底色（实得 "
+                  + toHex(pixelAt(pixels, 900, 501)) + "）");
+        // 位置与尺寸没跑偏：右边 1 像素以上也必须在形状内。
+        check(pixelAt(pixels, 999, 450) == kWhite
+                  || pixelAt(pixels, 998, 450) == kWhite,
+              "像素对齐的矩形：右边界附近仍是实心（形状没整体缩水）");
+    }
+
+    // ---- 变换通道：**画出来的地方 == 点得中的地方** ----
+    //
+    // 这是变换的核心契约：绘制过正变换、命中过逆变换，两者必须严格互逆。
+    // 验证方式**不手算几何**，而是交叉对账：扫一片区域，凡"明显有像素"的点必须
+    // 命中、凡"纯底色"的点必须不命中。抗锯齿边缘（半透明那一圈）不算数——
+    // 所以只统计周围 3×3 同色的点，把边界整圈排除掉。
+    {
+        const auto countMismatch = [&](const ink::InkingStaticButton& button,
+                                       int x0, int y0, int x1, int y1) {
+            int checked = 0;
+            int mismatch = 0;
+            for (int y = y0; y <= y1; y += 2) {
+                for (int x = x0; x <= x1; x += 2) {
+                    const bool painted = pixelAt(pixels, x, y) != kBackdrop;
+
+                    bool uniform = true;
+                    for (int dy = -1; dy <= 1 && uniform; ++dy) {
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            if ((pixelAt(pixels, x + dx, y + dy) != kBackdrop)
+                                != painted) {
+                                uniform = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (!uniform) {
+                        continue;  // 挨着边界，可能有抗锯齿，跳过
+                    }
+
+                    ++checked;
+                    // 用**像素中心**去问命中——那正是鼠标坐标的语义。
+                    if (button.HitTest(static_cast<float>(x) + 0.5f,
+                                       static_cast<float>(y) + 0.5f)
+                        != painted) {
+                        ++mismatch;
+                    }
+                }
+            }
+            std::printf("      [实测] 变换一致性：查了 %d 个点，不一致 %d 个\n",
+                        checked, mismatch);
+            return mismatch;
+        };
+
+        // 变换这一段要在"干净背景"上验：前面那个 `button` 还在 (100,100) 原地，
+        // 而 `turned` 也放在 (100,100)——它转成竖条之后，露出来的正是那个没旋转的
+        // 旧按钮，于是扫描区里混进别人的像素，"画与点"的对账当场就失真了
+        // （第一次跑就是 2468 个不一致，全来自这里）。藏掉它，扫描区只剩被测对象。
+        button.SetVisible(false);
+
+        // ① 瞬变 90°：横条变成竖条。hover 没配 transition，所以变换立刻到位。
+        ink::ButtonData turnedData = exampleButton();
+        turnedData.selfAnchor = ink::Anchor{0.0f, 0.0f};
+        turnedData.traceAnchor = ink::Anchor{0.0f, 0.0f};
+        turnedData.offsetX = 100.0f;
+        turnedData.offsetY = 100.0f;
+        turnedData.hover.transform = ink::TransformSpec{0.0f, 0.0f, 90.0f, 1.0f};
+        ink::InkingStaticButton turned(&scene, turnedData);
+        turned.MouseHover(true);
+        check(near(turned.GetDisplayTransform().rotate, 90.0f),
+              "没配过渡时变换瞬间到位（实得 "
+                  + std::to_string(turned.GetDisplayTransform().rotate) + "°）");
+        check(renderAndRead(), "旋转 90° 这一帧读回成功");
+        check(countMismatch(turned, 60, 20, 340, 280) == 0,
+              "旋转 90°：画出来的地方都能点到、点到的地方都画出来了");
+        // 竖条：原来左边那一块现在应当空出来（画与点都空）。
+        check(pixelAt(pixels, 110, 150) == kBackdrop,
+              "旋转 90° 后 (110,150) 已经没有像素");
+        check(!turned.HitTest(110.5f, 150.5f),
+              "旋转 90° 后 (110,150) 也点不中");
+
+        // ② 过渡中途（45°）：斜边那一档也要一致——这一档最容易出"半像素错位"。
+        ink::ButtonData turningData = turnedData;
+        turningData.offsetX = 380.0f;
+        turningData.offsetY = 660.0f;
+        turningData.hover.transitionSeconds = 0.2f;
+        ink::InkingStaticButton turning(&scene, turningData);
+        turning.MouseHover(true);
+        scene.TickFrame(0.1);  // 0.2 的一半
+        const float midRotate = turning.GetDisplayTransform().rotate;
+        check(near(midRotate, 45.0f),
+              "过渡中途的显示变换是 45°（实得 " + std::to_string(midRotate)
+                  + "°）");
+        check(renderAndRead(), "旋转 45° 这一帧读回成功");
+        check(countMismatch(turning, 300, 560, 700, 880) == 0,
+              "旋转 45° 中途：画出来的地方也都能点到");
     }
 
     SDL_SetRenderTarget(renderer, nullptr);
@@ -660,6 +843,357 @@ void testRender() {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
+}
+
+// ---------------------------------------------------------------------------
+// 7. 标脏协议（T-3）：结构 / 重绘 / 指针三种脏，各走各的消费
+//
+// 这一段的重点不是"值对不对"，而是**三种脏互不牵连**：
+//   - 动画每帧改颜色/变换 → 只该标重绘脏（+ 变换的命中脏），**绝不该**惊动结构；
+//   - 静置够帧数就该自己清掉，否则"画面稳了"这个信号永远为真、等于没有；
+//   - 指针移动只标指针脏，它不改任何几何。
+// 前两条一旦写错，表现都是"功能正常、但每帧白干一遍活"，只有计数能钉住。
+// ---------------------------------------------------------------------------
+
+class DirtyProbeScene : public ink::InkingScene {
+public:
+    DirtyProbeScene() : ink::InkingScene("DirtyProbe") {}
+};
+
+void testDirtyProtocol() {
+    std::printf("\n-- 标脏协议（结构 / 重绘 / 指针）--\n");
+
+    DirtyProbeScene scene;
+    // 过渡推进（TickFrame → onAnimationTick）只在**活跃**场景上有；所以这里必须点亮。
+    ink::SceneLibrary::SetActiveScene(&scene);
+
+    ink::ButtonData data = exampleButton();
+    data.selfAnchor = ink::Anchor{0.0f, 0.0f};
+    data.traceAnchor = ink::Anchor{0.0f, 0.0f};
+    data.offsetX = 100.0f;
+    data.offsetY = 100.0f;
+    data.hover.transitionSeconds = 0.2f;
+    data.hover.transform = ink::TransformSpec{0.0f, 0.0f, 30.0f, 1.0f};
+    ink::InkingStaticButton animated(&scene, data);
+
+    // 构造出来的节点初始就是脏的（第一帧总得画一次），先空转几帧把这份历史脏
+    // 消费干净——后面的计数才只反映"这一段动画"，不会把别人的账算进来。
+    for (int i = 0; i <= ink::InkingAnchor::kRepaintQuietFrames; ++i) {
+        scene.ConsumeFrameDirty();
+    }
+    check(!animated.IsRepaintDirty() && !animated.IsDirty(),
+          "静置几帧后，按钮不再是脏的");
+    check(scene.GetRepaintingNodeCount() == 0,
+          "静置几帧后，全场没有节点还在重绘（实得 "
+              + std::to_string(scene.GetRepaintingNodeCount()) + "）");
+
+    const std::uint64_t generationBefore = scene.GetStructureGeneration();
+
+    // 1) 过渡推进一帧：画面变了 → 重绘脏；变换在变 → 命中脏（悬停要重算）。
+    animated.MouseHover(true);
+    scene.TickFrame(0.05);
+    check(animated.IsRepaintDirty(), "过渡推进了一帧 → 重绘脏");
+    check(animated.IsDirty(), "变换在变 → 命中脏（同一个点可能落到别的组件上）");
+    check(scene.GetStructureGeneration() == generationBefore,
+          "颜色/变换动画**不该**惊动结构（惊动了就是每帧白重建一次绘制列表）");
+
+    // 2) 消费一次：过渡还没走完，所以仍然脏；场景能看见"画面在动"。
+    scene.ConsumeFrameDirty();
+    check(animated.IsRepaintDirty(), "过渡没走完，消费一次之后仍然脏");
+    check(scene.GetRepaintingNodeCount() == 1,
+          "场景看到「有 1 个节点的画面在动」（实得 "
+              + std::to_string(scene.GetRepaintingNodeCount()) + "）");
+
+    // 3) 把过渡推完，再连着消费够帧数 → 清掉。
+    scene.TickFrame(0.5);
+    for (int i = 0; i < ink::InkingAnchor::kRepaintQuietFrames; ++i) {
+        scene.ConsumeFrameDirty();
+    }
+    check(!animated.IsRepaintDirty(),
+          "连续 " + std::to_string(ink::InkingAnchor::kRepaintQuietFrames)
+              + " 帧没有新的重绘脏 → 自己清掉");
+    check(!animated.IsDirty(),
+          "命中脏也会在 " + std::to_string(ink::InkingAnchor::kHitQuietFrames)
+              + " 帧之后清掉");
+    check(scene.GetRepaintingNodeCount() == 0, "画面稳了：全场不再有节点重绘");
+    check(scene.GetStructureGeneration() == generationBefore,
+          "整段动画下来，结构脏一次都没被标过");
+
+    // 3b) 没配过渡的三态切换（瞬变）：显示值当场就变，也必须标出重绘脏来。
+    //     （这条曾经漏过：标脏只写在 Advance 里，而瞬变根本不经过 Advance。）
+    {
+        ink::ButtonData instant = exampleButton();
+        instant.selfAnchor = ink::Anchor{0.0f, 0.0f};
+        instant.traceAnchor = ink::Anchor{0.0f, 0.0f};
+        instant.offsetX = 400.0f;
+        instant.offsetY = 400.0f;
+        instant.hover.transform = ink::TransformSpec{0.0f, 0.0f, 0.0f, 1.2f};
+        ink::InkingStaticButton snapped(&scene, instant);
+
+        for (int i = 0; i <= ink::InkingAnchor::kRepaintQuietFrames; ++i) {
+            scene.ConsumeFrameDirty();
+        }
+        check(!snapped.IsRepaintDirty(), "瞬变按钮：静置之后不脏");
+
+        snapped.MouseHover(true);  // 没配 transition → 显示值当场换掉
+        scene.TickFrame(0.0);      // 空推一帧，只为了拿到那笔"当场换掉"的账
+        check(snapped.IsRepaintDirty(),
+              "没配过渡的三态切换也要标重绘脏（画面当场就变了）");
+        check(snapped.IsDirty(), "它同时改了缩放 → 命中脏也要标");
+    }
+
+    // 4) 指针脏：只有真的变了才算，帧末消费一次就清。
+    scene.SetPointerState(500.0f, 500.0f, /*down=*/false, /*inside=*/true);
+    check(scene.IsPointerDirty(), "指针动了 → 指针脏");
+    scene.ConsumeFrameDirty();
+    check(!scene.IsPointerDirty(), "帧末消费之后指针脏清掉");
+    scene.SetPointerState(500.0f, 500.0f, /*down=*/false, /*inside=*/true);
+    check(!scene.IsPointerDirty(),
+          "原地喂同一个坐标不算脏（窗口层每帧都会喂一次）");
+
+    // 5) 几何写入口：结构脏 + 重绘脏都要标——这是"命中表要变"那一类。
+    {
+        ink::AnchorData moverData;
+        moverData.selfAnchor = ink::Anchor{0.0f, 0.0f};
+        moverData.traceAnchor = ink::Anchor{0.0f, 0.0f};
+        moverData.offsetX = 800.0f;
+        moverData.offsetY = 500.0f;
+        moverData.width = 80;
+        moverData.height = 40;
+        ink::InkingDynamicAnchor mover(&scene, moverData);
+
+        for (int i = 0; i <= ink::InkingAnchor::kRepaintQuietFrames; ++i) {
+            scene.ConsumeFrameDirty();
+        }
+
+        const std::uint64_t beforeMove = scene.GetStructureGeneration();
+        check(mover.Resize(60, 40), "Resize 真的改了");
+        check(mover.IsRepaintDirty(), "几何变化 → 重绘脏");
+        check(scene.GetStructureGeneration() > beforeMove,
+              "几何变化 → 结构脏（帧首要重算静态坐标快照）");
+        check(!mover.Resize(60, 40), "传同一个尺寸不算改");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 8. 命中表（T-4）：换实现不能换语义
+//
+// 命中表最难的地方不是"能不能查"，而是"换掉线性扫之后，答案还是不是同一个"。
+// 所以这一段的核心是一条**逐点对账**：拿表查一遍、拿线性扫查一遍，全图每个点
+// 都必须给出同一个目标。参考实现写在自检里（框架里只留表）——两份实现各自
+// 独立，只有互相印证过才敢说"换的是实现，不是规则"。
+// ---------------------------------------------------------------------------
+
+class HitProbeScene : public ink::InkingScene {
+public:
+    HitProbeScene() : ink::InkingScene("HitProbe") {}
+};
+
+/** 参考实现：从绘制列表尾往前线性扫（= 没有表的时候那条路），三态规则照旧。 */
+ink::InkingAnchor* linearTopmostHit(ink::InkingScene& scene, float x, float y) {
+    const std::vector<ink::InkingScene::DrawItem>& items =
+        scene.BuildDrawList();
+
+    ink::InkingAnchor* passTarget = nullptr;
+    for (std::size_t i = items.size(); i > 0; --i) {
+        ink::InkingAnchor* node = items[i - 1].node;
+        if (node == nullptr || !node->IsVisibleInTree()) {
+            continue;
+        }
+        if (!node->HitTest(x, y)) {
+            continue;
+        }
+        if (node->IsHitPassThrough()) {
+            if (passTarget == nullptr) {
+                passTarget = node;
+            }
+            continue;
+        }
+        return node;
+    }
+    return passTarget;
+}
+
+void testHitTable() {
+    std::printf("\n-- 命中表（簇 + 格子 + CSR）--\n");
+
+    HitProbeScene scene;
+    ink::SceneLibrary::SetActiveScene(&scene);
+
+    const auto place = [](ink::ButtonData& data, float x, float y) {
+        data.selfAnchor = ink::Anchor{0.0f, 0.0f};
+        data.traceAnchor = ink::Anchor{0.0f, 0.0f};
+        data.offsetX = x;
+        data.offsetY = y;
+    };
+
+    // A / B：两个重叠的普通按钮（B 的 z 更高，压在 A 上）。
+    ink::ButtonData dataA = exampleButton();
+    place(dataA, 100.0f, 100.0f);
+    ink::InkingStaticButton a(&scene, dataA);
+
+    ink::ButtonData dataB = exampleButton();
+    place(dataB, 200.0f, 150.0f);
+    dataB.zIndex = 1;
+    ink::InkingStaticButton b(&scene, dataB);
+
+    // C / D：C 标了"让过"（PassThrough），压在 D 上——点 C 应该穿到 D。
+    ink::ButtonData dataC = exampleButton();
+    place(dataC, 100.0f, 320.0f);
+    dataC.zIndex = 5;
+    ink::InkingStaticButton c(&scene, dataC);
+    c.SetHitPassThrough(true);
+
+    ink::ButtonData dataD = exampleButton();
+    place(dataD, 100.0f, 320.0f);
+    ink::InkingStaticButton d(&scene, dataD);
+
+    // E：隐藏的按钮，点它中心应该是 Miss（隐藏的既不进表也不留洞）。
+    ink::ButtonData dataE = exampleButton();
+    place(dataE, 600.0f, 500.0f);
+    ink::InkingStaticButton e(&scene, dataE);
+    e.SetVisible(false);
+
+    // F：动态按钮（不进表，只留洞），G 是压在它下面的静态按钮——
+    //    用来看"静态与动态按 z 序合并"。F 的 z 高一点，否则同 z 时
+    //    后构造的 G 会赢（注册序号更大），那就测不到"动态赢"这一侧了。
+    ink::ButtonData dataF = exampleButton();
+    place(dataF, 900.0f, 200.0f);
+    dataF.zIndex = 3;
+    ink::InkingDynamicButton f(&scene, dataF);
+
+    ink::ButtonData dataG = exampleButton();
+    place(dataG, 900.0f, 200.0f);
+    ink::InkingStaticButton g(&scene, dataG);
+
+    // H：带旋转的静态按钮（悬停转 30°）——检验"包络冻结、精判用当前变换"。
+    ink::ButtonData dataH = exampleButton();
+    place(dataH, 500.0f, 800.0f);
+    dataH.hover.transitionSeconds = 0.1f;
+    dataH.hover.transform = ink::TransformSpec{0.0f, 0.0f, 30.0f, 1.0f};
+    ink::InkingStaticButton h(&scene, dataH);
+
+    // 表建好了吗：静态可见的有 A / B / C / D / G / H 六个（E 隐藏、F 动态不算）。
+    check(scene.GetHitTableEntryCount() == 6,
+          "表里只装静态可见组件（实得 "
+              + std::to_string(scene.GetHitTableEntryCount()) + "）");
+    check(scene.GetHitTableClusterCount() >= 1, "至少建出一个簇");
+    check(scene.GetHitTableCellCount() > 0, "簇内切出了格子");
+
+    // ---- 逐点对账：表 == 线性扫 ----
+    {
+        int checked = 0;
+        int mismatch = 0;
+        for (int y = 40; y <= 1000; y += 7) {
+            for (int x = 40; x <= 1300; x += 7) {
+                const float fx = static_cast<float>(x);
+                const float fy = static_cast<float>(y);
+
+                ink::InkingAnchor* const tableHit = scene.QueryHit(fx, fy).target;
+                // 参考实现里动态组件也参与（它自己判命中），规则与 QueryHit 一致。
+                ink::InkingAnchor* linearHit = linearTopmostHit(scene, fx, fy);
+
+                // 动态层：QueryHit 只在"点在洞里"时才去问动态层，
+                // 所以对账时把动态命中按 z 序合进来，两边才是同一套规则。
+                ink::InkingAnchor* dynamicHit = nullptr;
+                {
+                    const std::vector<ink::InkingScene::DrawItem>& items =
+                        scene.BuildDrawList();
+                    for (std::size_t i = items.size(); i > 0; --i) {
+                        ink::InkingAnchor* node = items[i - 1].node;
+                        if (node == nullptr || !node->IsDynamic()
+                            || !node->IsVisibleInTree()) {
+                            continue;
+                        }
+                        if (node->HitTest(fx, fy)) {
+                            dynamicHit = node;
+                            break;
+                        }
+                    }
+                }
+                if (dynamicHit != nullptr
+                    && (linearHit == nullptr
+                        || ink::InkingAnchor::IsAbove(*dynamicHit, *linearHit))) {
+                    linearHit = dynamicHit;
+                }
+
+                ++checked;
+                if (tableHit != linearHit) {
+                    ++mismatch;
+                }
+            }
+        }
+        std::printf("      [实测] 命中表对账：查了 %d 个点，不一致 %d 个\n",
+                    checked, mismatch);
+        check(mismatch == 0, "表查出来的目标和线性扫逐点一致");
+    }
+
+    // ---- 三态 ----
+    {
+        // 穿透：C 在上且标了让过，点它应该穿到下面的 D。
+        const ink::HitResult throughHit = scene.QueryHit(150.0f, 360.0f);
+        check(throughHit.kind == ink::HitKind::Block && throughHit.target == &d,
+              "PassThrough 让过：点 C 穿到了下面的 D");
+
+        // 普通命中：B 压在 A 上，点重叠区应该是 B。
+        const ink::HitResult overlap = scene.QueryHit(250.0f, 200.0f);
+        check(overlap.kind == ink::HitKind::Block && overlap.target == &b,
+              "重叠区取 z 更高的那个");
+
+        // 空白：场景没画到的地方是 Miss。
+        const ink::HitResult empty = scene.QueryHit(1800.0f, 1000.0f);
+        check(empty.kind == ink::HitKind::Miss && empty.target == nullptr,
+              "空白处是 Miss");
+
+        // 隐藏的：点 E 中心什么都不该有。
+        const ink::HitResult hidden = scene.QueryHit(700.0f, 550.0f);
+        check(hidden.kind == ink::HitKind::Miss,
+              "隐藏的组件既命不中也留不下洞");
+    }
+
+    // ---- 动态层合并：同一块地方，靠 z 序决定谁说了算 ----
+    {
+        // F（动态）压在 G（静态）上面：点在重叠区，归动态组件。
+        const ink::HitResult onDynamic = scene.QueryHit(950.0f, 250.0f);
+        check(onDynamic.target == &f, "动态压在静态上时，动态赢");
+
+        // 把 G 抬到 F 上面：同一块地方改成静态赢。
+        g.ChangeZIndex(20);
+        const ink::HitResult onStatic = scene.QueryHit(950.0f, 250.0f);
+        check(onStatic.target == &g, "静态抬到更高 z 之后，静态赢");
+        g.ChangeZIndex(0);
+
+        // 洞之外：不该问动态层（这条只能靠"结果对"间接验，但很值——
+        // 洞一旦算错，表现就是"动态组件忽然抢不到点击"）。
+        // 取 A 的中心而不是角：A 是圆角矩形，角上是空的。
+        const ink::HitResult awayFromDynamic = scene.QueryHit(150.0f, 150.0f);
+        check(awayFromDynamic.target == &a, "远离动态组件的地方不受它影响");
+    }
+
+    // ---- 冻结与重烘：几何变了表跟着变，变换变了表不动但命中照样对 ----
+    {
+        ink::ButtonData dataJ = exampleButton();
+        place(dataJ, 1400.0f, 700.0f);
+        ink::InkingStaticButton j(&scene, dataJ);
+        check(scene.QueryHit(1450.0f, 750.0f).target == &j,
+              "静态按钮：原本就点得到");
+
+        // 变换：H 悬停转 30°，旋转后它的角会伸到原来的表外一点点。
+        h.MouseHover(true);
+        scene.TickFrame(0.5);
+        const std::size_t entriesBefore = scene.GetHitTableEntryCount();
+        const float rotate = h.GetDisplayTransform().rotate;
+        check(rotate > 29.0f && rotate < 31.0f,
+              "H 已经转到 30°（实得 " + std::to_string(rotate) + "）");
+        check(scene.GetHitTableEntryCount() == entriesBefore,
+              "变换不触发重烘（条目数没变）");
+
+        // 旋转之后，落在"原表内、旋转后仍在包络内"的点必须照样命中：
+        // 包络是保守的，所以这里查得到；精判用当前变换，所以答案是对的。
+        const ink::HitResult rotated = scene.QueryHit(600.0f, 850.0f);
+        check(rotated.target == &h,
+              "旋转后的按钮照样点得到（包络冻结 + 精判用当前变换）");
+    }
 }
 
 }  // namespace
@@ -673,6 +1207,8 @@ int main() {
     testButtonState();
     testNameConstruction();
     testRender();
+    testDirtyProtocol();
+    testHitTable();
 
     std::printf("\n失败项：%d\n", gFailed);
     return gFailed == 0 ? 0 : 1;
